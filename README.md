@@ -1,43 +1,31 @@
-# MFA Authentication Web Application
+day 1
+ obj - learn mcp
+ milestone achieved - learnt mcp
 
-Full-stack authentication app with email/password login, 6-digit OTP via email, and a protected dashboard.
+ day 2-3
+ obj - learn github and push simple html code 
+ milestone achieved - learnt github and pushed code
 
-## Features
+ day 4
+ obj - learn how to fork and collaborate 
+ milestone achieved- learnt how to fork and collaborate 
 
-- User registration and login (bcrypt password hashing)
-- Multi-factor authentication via email OTP (5-minute expiry)
-- JWT session management with HTTP-only cookies
-- Protected dashboard route
-- MongoDB with in-memory fallback
+ day 5
+ obj - learn about mfa and its implementation
+ milestone achieved - learnt about mfa 
 
-## Tech Stack
+ day 6
+ obj - learn about OAuth 2 implementation
+ milestone achieved - learnt about OAuth 2 
 
-- **Frontend:** HTML, CSS, Vanilla JavaScript
-- **Backend:** Node.js, Express
-- **Database:** MongoDB (optional)
-- **Email:** Nodemailer (Gmail SMTP)
+ day 7
+ obj - to implement mfa 
+ milestone achieved - could not implement mfa 
 
-## Installation
+ day 8
+ obj - to implement mfa that we couldnt implement on day 5 
+ milestone achieved - mfa implemented 
 
-```bash
-git clone https://github.com/AnimendraThakre/web-dev.git
-cd web-dev
-npm install
-copy .env.example .env
-```
-
-Edit `.env` with JWT secrets and Gmail SMTP credentials (use a Google App Password).
-
-## Run Locally
-
-```bash
-npm start
-```
-
-Open http://localhost:3000/login.html
-
-Test SMTP: `npm run test:email`
-
-## Legacy Files
-
-`index.html` is from the original web-dev learning exercise (localStorage-based demo).
+ day 9
+ obj - to deploy code from local host to live host and we should recieve otp in gmail 
+ milestone achieved - could not deploy
