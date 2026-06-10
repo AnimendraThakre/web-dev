@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login & Sign Up</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="auth-container">
+    <h2>Welcome</h2>
+    <p class="subtitle">Secure sign in with email verification</p>
+
+    <div id="message" class="message" role="alert"></div>
+
+    <div class="tabs">
+      <button type="button" class="tab active" data-tab="login">Login</button>
+      <button type="button" class="tab" data-tab="signup">Sign Up</button>
+    </div>
+
+    <form id="loginPanel" class="panel active" novalidate>
+      <label for="loginEmail">Email</label>
+      <input type="email" id="loginEmail" placeholder="Email ID" autocomplete="email" required>
+
+      <label for="loginPassword">Password</label>
+      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
+
+      <div class="button-group">
+        <button type="submit" class="btn-login" id="loginBtn">Login</button>
+        <button type="button" class="btn-reset" id="loginResetBtn">Reset</button>
+      </div>
+    </form>
+
+    <form id="signupPanel" class="panel" novalidate>
+      <label for="userName">Full Name</label>
+      <input type="text" id="userName" placeholder="Full Name" autocomplete="name" required>
+
+      <label for="userEmail">Email</label>
+      <input type="email" id="userEmail" placeholder="Email ID" autocomplete="email" required>
+
+      <label for="userPassword">Password</label>
+      <input type="password" id="userPassword" placeholder="Password (min 6 characters)" autocomplete="new-password" required>
+
+      <div class="button-group">
+        <button type="submit" class="btn-signup" id="signupBtn">Sign Up</button>
+        <button type="button" class="btn-reset" id="signupResetBtn">Reset</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    App.initLoginPage();
+  </script>
+</body>
+</html>

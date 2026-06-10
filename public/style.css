@@ -1,0 +1,198 @@
+/* Base — matches existing login page (Segoe UI, #f4f7f6, card layout) */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  margin: 0;
+  padding: 20px;
+  background-color: #f4f7f6;
+  color: #333;
+}
+
+.auth-container,
+.dashboard-container {
+  background: white;
+  padding: 30px;
+  border-radius: 10px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 400px;
+}
+
+.dashboard-container {
+  max-width: 520px;
+}
+
+h1, h2 {
+  text-align: center;
+  color: #333;
+  margin-top: 0;
+}
+
+h1 { font-size: 1.5rem; }
+h2 { font-size: 1.35rem; }
+
+.subtitle {
+  text-align: center;
+  color: #666;
+  font-size: 0.9rem;
+  margin: -8px 0 20px;
+}
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  margin: 0 0 14px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  font-size: 1rem;
+}
+
+input:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.15);
+}
+
+.otp-input {
+  text-align: center;
+  letter-spacing: 8px;
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+
+.button-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+button,
+.btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 0.95rem;
+  transition: opacity 0.2s;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button:hover:not(:disabled),
+.btn:hover {
+  opacity: 0.9;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-login { background-color: #007bff; color: white; }
+.btn-signup { background-color: #28a745; color: white; }
+.btn-reset { background-color: #6c757d; color: white; }
+.btn-secondary { background-color: #e9ecef; color: #333; }
+.btn-danger { background-color: #dc3545; color: white; }
+.btn-link {
+  background: none;
+  color: #007bff;
+  font-weight: normal;
+  padding: 8px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.tab {
+  flex: 1;
+  padding: 10px;
+  border: 2px solid #ddd;
+  background: #fff;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #666;
+}
+
+.tab.active {
+  border-color: #007bff;
+  color: #007bff;
+  background: #f0f7ff;
+}
+
+.panel { display: none; }
+.panel.active { display: block; }
+
+.message {
+  padding: 10px 12px;
+  border-radius: 5px;
+  font-size: 0.9rem;
+  margin-bottom: 14px;
+  display: none;
+}
+
+.message.show { display: block; }
+.message.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+.message.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.message.info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+
+.timer {
+  text-align: center;
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.user-card {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+}
+
+.user-card p {
+  margin: 8px 0;
+  font-size: 0.95rem;
+}
+
+.user-card strong {
+  color: #555;
+  display: inline-block;
+  min-width: 56px;
+}
+
+.mfa-icon {
+  text-align: center;
+  font-size: 2.5rem;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 480px) {
+  .auth-container,
+  .dashboard-container {
+    padding: 22px;
+  }
+}

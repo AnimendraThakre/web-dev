@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="dashboard-container">
+    <h1>Dashboard</h1>
+    <p class="subtitle" id="welcomeMsg">Loading...</p>
+
+    <div id="message" class="message" role="alert"></div>
+
+    <div class="user-card">
+      <p><strong>Name:</strong> <span id="userName">—</span></p>
+      <p><strong>Email:</strong> <span id="userEmail">—</span></p>
+    </div>
+
+    <div class="button-group">
+      <button type="button" class="btn-danger" id="logoutBtn">Logout</button>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>
+    App.initDashboardPage();
+  </script>
+</body>
+</html>

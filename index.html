@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login & Sign Up</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f7f6;
+        }
+        .auth-container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            width: 350px;
+        }
+        h2 { text-align: center; color: #333; }
+        input {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        .button-group { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+        button {
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        .btn-login { background-color: #007bff; color: white; }
+        .btn-signup { background-color: #28a745; color: white; }
+        .btn-reset { background-color: #dc3545; color: white; }
+    </style>
+</head>
+<body>
+    <div class="auth-container">
+        <h2>Welcome</h2>
+        <input type="text" id="userName" placeholder="Full Name">
+        <input type="email" id="userEmail" placeholder="Email ID">
+        <input type="password" id="userPassword" placeholder="Password">
+        
+        <div class="button-group">
+            <button class="btn-login" onclick="handleLogin()">Manual Login</button>
+            <button class="btn-signup" onclick="handleSignUp()">Sign Up</button>
+            <button class="btn-reset" onclick="handleReset()">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        // Initialize 'database' in localStorage if it doesn't exist
+        if (!localStorage.getItem('userDB')) {
+            localStorage.setItem('userDB', JSON.stringify([]));
+        }
+
+        function handleSignUp() {
+            const name = document.getElementById('userName').value;
+            const email = document.getElementById('userEmail').value;
+            const pass = document.getElementById('userPassword').value;
+
+            if (!name || !email || !pass) return alert("Please fill all fields");
+
+            let db = JSON.parse(localStorage.getItem('userDB'));
+            db.push({ name, email, pass });
+            localStorage.setItem('userDB', JSON.stringify(db));
+            alert("Sign up successful! Data stored in local dataset.");
+        }
+
+        function handleLogin() {
+            const email = document.getElementById('userEmail').value;
+            const pass = document.getElementById('userPassword').value;
+            let db = JSON.parse(localStorage.getItem('userDB'));
+            
+            const user = db.find(u => u.email === email && u.pass === pass);
+            if (user) alert("Login Successful! Welcome " + user.name);
+            else alert("Invalid credentials.");
+        }
+
+        function handleReset() {
+            document.querySelectorAll('input').forEach(input => input.value = '');
+        }
+    </script>
+</body>
+</html>
