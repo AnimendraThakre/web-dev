@@ -1,15 +1,21 @@
 const nodemailer = require('nodemailer');
 
-let transporter = null;
-let verified = false;
+/** Strip wrapping quotes Vercel/users sometimes include in env values. */
+function cleanEnv(value) {
+  let v = (value || '').trim();
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    v = v.slice(1, -1).trim();
+  }
+  return v;
+}
 
 /** Gmail app passwords are 16 chars; Google often displays them with spaces. */
 function normalizeSmtpPass(pass) {
-  return (pass || '').trim().replace(/\s+/g, '');
+  return cleanEnv(pass).replace(/\s+/g, '');
 }
 
 function getSmtpUser() {
-  return (process.env.SMTP_USER || '').trim();
+  return cleanEnv(process.env.SMTP_USER);
 }
 
 function getSmtpPass() {
@@ -19,17 +25,15 @@ function getSmtpPass() {
 function isSmtpConfigured() {
   const user = getSmtpUser();
   const pass = getSmtpPass();
-  const service = (process.env.SMTP_SERVICE || '').trim();
-  const host = (process.env.SMTP_HOST || '').trim();
-  return Boolean(user && pass && (service || host));
+  const host = cleanEnv(process.env.SMTP_HOST);
+  const service = cleanEnv(process.env.SMTP_SERVICE);
+  return Boolean(user && pass && (host || service));
 }
 
 function createTransporter() {
   const user = getSmtpUser();
   const pass = getSmtpPass();
-
-  // Explicit host/port is more reliable for Gmail than the "service" shorthand
-  const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+  const host = cleanEnv(process.env.SMTP_HOST) || 'smtp.gmail.com';
   const port = Number(process.env.SMTP_PORT) || 587;
   const secure = process.env.SMTP_SECURE === 'true';
 
@@ -38,17 +42,22 @@ function createTransporter() {
     port,
     secure,
     auth: { user, pass },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
     tls: { minVersion: 'TLSv1.2' },
   });
 }
 
 function getTransporter() {
-  if (!isSmtpConfigured()) return null;
-  if (!transporter) {
-    transporter = createTransporter();
-    verified = false;
+  // Fresh transporter on Vercel — cached connections often fail across invocations
+  if (process.env.VERCEL) {
+    return createTransporter();
   }
-  return transporter;
+  if (!global._mailTransporter) {
+    global._mailTransporter = createTransporter();
+  }
+  return global._mailTransporter;
 }
 
 async function verifySmtpConnection() {
@@ -60,17 +69,12 @@ async function verifySmtpConnection() {
   try {
     const transport = getTransporter();
     await transport.verify();
-    verified = true;
-    console.log(`[Mail] SMTP ready — emails will be sent from ${process.env.EMAIL_FROM || process.env.SMTP_USER}`);
+    console.log(`[Mail] SMTP ready — sending from ${getEmailFrom()}`);
     return true;
   } catch (err) {
-    verified = false;
     console.error('[Mail] SMTP connection failed:', err.message);
     if (String(err.message).includes('535') || String(err.message).includes('BadCredentials')) {
-      console.error('[Mail] Gmail rejected the login. Fix:');
-      console.error('  1. Enable 2-Step Verification on your Google account');
-      console.error('  2. Create a new App Password: https://myaccount.google.com/apppasswords');
-      console.error('  3. Put the 16-character password in .env as SMTP_PASS (spaces are OK)');
+      console.error('[Mail] Gmail rejected credentials. Use a Google App Password (not your normal password).');
     }
     return false;
   }
@@ -104,11 +108,17 @@ If you did not request this, you can safely ignore this email.`;
 }
 
 function getEmailFrom() {
-  let from = (process.env.EMAIL_FROM || getSmtpUser()).trim();
-  if ((from.startsWith('"') && from.endsWith('"')) || (from.startsWith("'") && from.endsWith("'"))) {
-    from = from.slice(1, -1);
-  }
-  return from;
+  return cleanEnv(process.env.EMAIL_FROM) || getSmtpUser();
+}
+
+function smtpStatus() {
+  const user = getSmtpUser();
+  return {
+    configured: isSmtpConfigured(),
+    host: cleanEnv(process.env.SMTP_HOST) || 'smtp.gmail.com',
+    user: user ? user.replace(/(.{2}).*(@.*)/, '$1***$2') : null,
+    onVercel: Boolean(process.env.VERCEL),
+  };
 }
 
 async function sendOtpEmail(to, otp, fullName, { isResend = false } = {}) {
@@ -120,15 +130,29 @@ async function sendOtpEmail(to, otp, fullName, { isResend = false } = {}) {
     return { sent: false, devOtp: process.env.NODE_ENV !== 'production' ? otp : undefined };
   }
 
-  const transport = getTransporter();
-
   try {
+    const transport = getTransporter();
     await transport.sendMail({ from, to, subject, text, html });
     console.log(`[Mail] OTP sent to ${to}`);
     return { sent: true };
   } catch (err) {
     console.error(`[Mail] Failed to send OTP to ${to}:`, err.message);
-    throw new Error('Could not send verification email. Check SMTP settings and try again.');
+    console.error('[Mail] SMTP status:', JSON.stringify(smtpStatus()));
+
+    if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
+      console.log(`[DEV] Fallback OTP for ${to}: ${otp}`);
+      return { sent: false, devOtp: otp };
+    }
+
+    if (String(err.message).includes('535') || String(err.message).includes('BadCredentials')) {
+      throw new Error(
+        'Gmail rejected SMTP login. On Vercel, set SMTP_USER and SMTP_PASS (App Password) in Environment Variables — no quotes.'
+      );
+    }
+
+    throw new Error(
+      'Could not send verification email. Add SMTP variables in Vercel Settings → Environment Variables, then redeploy.'
+    );
   }
 }
 
@@ -136,4 +160,5 @@ module.exports = {
   isSmtpConfigured,
   verifySmtpConnection,
   sendOtpEmail,
+  smtpStatus,
 };

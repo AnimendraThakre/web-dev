@@ -4,6 +4,7 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const { connectDB } = require('./models/User');
+const { smtpStatus, verifySmtpConnection } = require('./utils/mailer');
 
 const authRoutes = require('./routes/auth');
 const otpRoutes = require('./routes/otp');
@@ -73,6 +74,11 @@ app.get('/api/protected/dashboard', requireAuth, (req, res) => {
 
 app.get('/', (req, res) => {
   res.redirect('/login.html');
+});
+
+app.get('/api/health', async (req, res) => {
+  const smtpOk = await verifySmtpConnection().catch(() => false);
+  res.json({ ok: true, smtp: { ...smtpStatus(), connected: smtpOk } });
 });
 
 app.use((err, req, res, next) => {
