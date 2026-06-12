@@ -4,7 +4,7 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const { connectDB } = require('./models/User');
-const { smtpStatus, verifySmtpConnection } = require('./utils/mailer');
+const { smtpStatus } = require('./utils/mailer');
 
 const authRoutes = require('./routes/auth');
 const otpRoutes = require('./routes/otp');
@@ -16,6 +16,10 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, smtp: smtpStatus() });
+});
+
 let dbReady = false;
 
 async function ensureDb() {
@@ -25,14 +29,13 @@ async function ensureDb() {
   }
 }
 
-app.use('/api', async (req, res, next) => {
-  try {
-    await ensureDb();
-    next();
-  } catch (err) {
-    console.error('Database connection error:', err.message);
-    res.status(503).json({ error: 'Database unavailable. Check MONGODB_URI.' });
-  }
+app.use('/api', (req, res, next) => {
+  ensureDb()
+    .then(() => next())
+    .catch((err) => {
+      console.error('Database connection error:', err.message);
+      res.status(503).json({ error: 'Database unavailable. Check MONGODB_URI.' });
+    });
 });
 
 app.use('/api', (req, res, next) => {
@@ -76,9 +79,10 @@ app.get('/', (req, res) => {
   res.redirect('/login.html');
 });
 
-app.get('/api/health', async (req, res) => {
-  const smtpOk = await verifySmtpConnection().catch(() => false);
-  res.json({ ok: true, smtp: { ...smtpStatus(), connected: smtpOk } });
+app.use((req, res) => {
+  if (!res.headersSent) {
+    res.status(404).json({ error: 'Not found.' });
+  }
 });
 
 app.use((err, req, res, next) => {

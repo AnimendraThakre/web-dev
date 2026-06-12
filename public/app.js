@@ -19,19 +19,31 @@ const App = (function () {
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(`${API}${path}`, {
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...options.headers },
-      ...options,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data.error || res.statusText || 'Request failed');
-      err.status = res.status;
-      err.data = data;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+    try {
+      const res = await fetch(`${API}${path}`, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...options.headers },
+        signal: controller.signal,
+        ...options,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || res.statusText || 'Request failed');
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw new Error('Request timed out. The server may be starting up — try again.');
+      }
       throw err;
+    } finally {
+      clearTimeout(timeout);
     }
-    return data;
   }
 
   async function checkAuth() {

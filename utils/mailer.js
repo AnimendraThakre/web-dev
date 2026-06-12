@@ -42,9 +42,9 @@ function createTransporter() {
     port,
     secure,
     auth: { user, pass },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
     tls: { minVersion: 'TLSv1.2' },
   });
 }

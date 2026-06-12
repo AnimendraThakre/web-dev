@@ -118,21 +118,34 @@ async function updateUser(user, updates) {
   return user;
 }
 
+let connectPromise = null;
+
 async function connectDB(uri) {
-  if (!uri) {
+  if (!uri || uri.includes('127.0.0.1') || uri.includes('localhost')) {
     setMemoryMode(true);
     return false;
   }
-  try {
-    await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000 });
-    console.log('[DB] Connected to MongoDB');
+  if (mongoose.connection.readyState === 1) {
     setMemoryMode(false);
     return true;
-  } catch (err) {
-    console.warn('[DB] MongoDB unavailable:', err.message);
-    setMemoryMode(true);
-    return false;
   }
+  if (connectPromise) {
+    return connectPromise;
+  }
+  connectPromise = mongoose
+    .connect(uri, { serverSelectionTimeoutMS: 3000 })
+    .then(() => {
+      console.log('[DB] Connected to MongoDB');
+      setMemoryMode(false);
+      return true;
+    })
+    .catch((err) => {
+      console.warn('[DB] MongoDB unavailable:', err.message);
+      setMemoryMode(true);
+      connectPromise = null;
+      return false;
+    });
+  return connectPromise;
 }
 
 module.exports = {
