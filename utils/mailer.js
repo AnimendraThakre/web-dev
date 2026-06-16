@@ -41,13 +41,16 @@ function formatSmtpError(err) {
   return err.message || 'Failed to send email.';
 }
 
-async function sendEmailOtp(to, otp, fullName) {
+async function sendEmailOtp(to, otp, fullName, template = {}) {
   const from = (process.env.EMAIL_FROM || process.env.SMTP_USER || '').trim().replace(/^["']|["']$/g, '');
   const greeting = fullName ? `Hello ${fullName}` : 'Hello';
+  const subject = template.subject || 'Verify your email address';
+  const heading = template.heading || 'Verify your email';
+  const intro = template.intro || 'Your verification code is:';
 
   const text = `${greeting},
 
-Your email verification code is: ${otp}
+${intro} ${otp}
 
 This code expires in 5 minutes.
 
@@ -55,9 +58,9 @@ If you did not create an account, ignore this email.`;
 
   const html = `
     <div style="font-family:Segoe UI,sans-serif;max-width:480px;padding:24px">
-      <h2>Verify your email</h2>
+      <h2>${heading}</h2>
       <p>${greeting},</p>
-      <p>Your verification code is:</p>
+      <p>${intro}</p>
       <p style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#007bff">${otp}</p>
       <p style="color:#666">Expires in <strong>5 minutes</strong>.</p>
     </div>
@@ -71,8 +74,8 @@ If you did not create an account, ignore this email.`;
 
   const transport = getTransporter();
   try {
-    await transport.sendMail({ from, to, subject: 'Verify your email address', text, html });
-    console.log(`[SMTP] Verification email sent to ${to}`);
+    await transport.sendMail({ from, to, subject, text, html });
+    console.log(`[SMTP] Email sent to ${to}: ${subject}`);
     return { sent: true };
   } catch (err) {
     console.error('[SMTP] Send failed:', err.message);
