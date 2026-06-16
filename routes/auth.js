@@ -29,6 +29,18 @@ function isValidName(name) {
   return typeof name === 'string' && name.trim().length >= 2 && name.trim().length <= 100;
 }
 
+function getAuthUserId(req) {
+  const token = req.cookies?.token;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (payload.type !== 'auth') return null;
+    return payload.sub;
+  } catch {
+    return null;
+  }
+}
+
 function signToken(userId, type, expiresIn) {
   return jwt.sign({ sub: userId, type }, config.jwtMfaSecret, { expiresIn });
 }
@@ -292,6 +304,130 @@ router.post('/logout', (req, res) => {
   res.clearCookie('verify_email_token');
   res.clearCookie('setup_mfa_token');
   res.json({ message: 'Logged out successfully.' });
+});
+
+/**
+ * POST /api/auth/change-password
+ * Authenticated users can change their password by providing current password.
+ */
+router.post('/change-password', async (req, res) => {
+  try {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ error: 'Authentication required.' });
+
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || typeof currentPassword !== 'string') {
+      return res.status(400).json({ error: 'Current password is required.' });
+    }
+    if (!isValidPassword(newPassword)) {
+      return res.status(400).json({ error: 'New password must be 6–128 characters.' });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ error: 'New password must be different from current password.' });
+    }
+
+    const user = await findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const validCurrent = await bcrypt.compare(currentPassword, user.password);
+    if (!validCurrent) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await updateUser(user, { password: hashedPassword });
+    res.json({ message: 'Password updated successfully.' });
+  } catch (err) {
+    respondWithError(res, err, 'Could not change password.');
+  }
+});
+
+/**
+ * POST /api/auth/forgot-password
+ * Sends a time-limited OTP to the user's email for password reset.
+ */
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email address.' });
+    }
+
+    const user = await findByEmail(email);
+    if (!user) {
+      return res.json({
+        message: 'If that email is registered, a password reset code has been sent.',
+      });
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = await hashEmailOtp(otp);
+    await updateUser(user, {
+      resetOtpHash: otpHash,
+      resetOtpExpiresAt: getEmailOtpExpiry(),
+    });
+
+    const mailResult = await sendEmailOtp(user.email, otp, user.fullName, {
+      subject: 'Password reset code',
+      heading: 'Reset your password',
+      intro: 'Use this code to reset your password:',
+    });
+
+    const response = {
+      message: 'If that email is registered, a password reset code has been sent.',
+      redirect: '/reset-password.html',
+    };
+    if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+    res.json(response);
+  } catch (err) {
+    respondWithError(res, err, 'Could not start password reset.');
+  }
+});
+
+/**
+ * POST /api/auth/reset-password
+ * Resets password using email + OTP code.
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email address.' });
+    }
+    if (!isValidEmailOtp(code)) {
+      return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
+    }
+    if (!isValidPassword(newPassword)) {
+      return res.status(400).json({ error: 'New password must be 6–128 characters.' });
+    }
+
+    const user = await findByEmail(email, { includeResetOtp: true });
+    if (!user || !user.resetOtpHash || !user.resetOtpExpiresAt) {
+      return res.status(400).json({ error: 'Invalid or expired reset session.' });
+    }
+    if (new Date() > new Date(user.resetOtpExpiresAt)) {
+      await updateUser(user, { resetOtpHash: null, resetOtpExpiresAt: null });
+      return res.status(400).json({ error: 'Reset code expired. Request a new one.' });
+    }
+
+    const valid = await verifyEmailOtp(code, user.resetOtpHash);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid reset code.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await updateUser(user, {
+      password: hashedPassword,
+      resetOtpHash: null,
+      resetOtpExpiresAt: null,
+    });
+
+    res.clearCookie('mfa_token');
+    res.clearCookie('token');
+    res.json({ message: 'Password reset successful. Please log in again.', redirect: '/login.html' });
+  } catch (err) {
+    respondWithError(res, err, 'Could not reset password.');
+  }
 });
 
 router.get('/me', async (req, res) => {

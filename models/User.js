@@ -8,6 +8,7 @@ const { config, isLocalMongoUri } = require('../config/env');
  * - mfaEnabled: Google Authenticator confirmed
  * - totpSecret: encrypted TOTP secret (select: false)
  * - emailOtpHash / emailOtpExpiresAt: registration email OTP (select: false)
+ * - resetOtpHash / resetOtpExpiresAt: forgot-password OTP (select: false)
  */
 const userSchema = new mongoose.Schema(
   {
@@ -19,6 +20,8 @@ const userSchema = new mongoose.Schema(
     totpSecret: { type: String, default: null, select: false },
     emailOtpHash: { type: String, default: null, select: false },
     emailOtpExpiresAt: { type: Date, default: null, select: false },
+    resetOtpHash: { type: String, default: null, select: false },
+    resetOtpExpiresAt: { type: Date, default: null, select: false },
   },
   { timestamps: true }
 );
@@ -48,10 +51,11 @@ function prepareTotpForStorage(secret) {
   return encryptField(secret);
 }
 
-function buildSelectFlags({ includeTotpSecret = false, includeEmailOtp = false } = {}) {
+function buildSelectFlags({ includeTotpSecret = false, includeEmailOtp = false, includeResetOtp = false } = {}) {
   const fields = [];
   if (includeTotpSecret) fields.push('+totpSecret');
   if (includeEmailOtp) fields.push('+emailOtpHash', '+emailOtpExpiresAt');
+  if (includeResetOtp) fields.push('+resetOtpHash', '+resetOtpExpiresAt');
   return fields;
 }
 
@@ -105,6 +109,8 @@ async function createUser(data) {
       totpSecret: payload.totpSecret ?? null,
       emailOtpHash: payload.emailOtpHash ?? null,
       emailOtpExpiresAt: payload.emailOtpExpiresAt ?? null,
+      resetOtpHash: payload.resetOtpHash ?? null,
+      resetOtpExpiresAt: payload.resetOtpExpiresAt ?? null,
       createdAt: new Date(),
       updatedAt: new Date(),
       async save() {

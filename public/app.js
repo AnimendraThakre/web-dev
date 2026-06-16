@@ -153,6 +153,112 @@ const App = (function () {
     });
   }
 
+  function initForgotPasswordPage() {
+    const msg = document.getElementById('message');
+    const form = document.getElementById('forgotPasswordForm');
+
+    form?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('forgotPasswordBtn');
+      btn.disabled = true;
+      hideMessage(msg);
+      const email = document.getElementById('forgotEmail').value.trim();
+      try {
+        const data = await api('/api/auth/forgot-password', {
+          method: 'POST',
+          body: JSON.stringify({ email }),
+        });
+        if (data.devOtp) showMessage(msg, `Dev mode: reset OTP is ${data.devOtp}`, 'info');
+        else showMessage(msg, data.message, 'success');
+        setTimeout(() => {
+          window.location.href = `${data.redirect || '/reset-password.html'}?email=${encodeURIComponent(email)}`;
+        }, 900);
+      } catch (err) {
+        showMessage(msg, err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function initResetPasswordPage() {
+    const msg = document.getElementById('message');
+    bindOtpInput('resetCode');
+
+    const params = new URLSearchParams(window.location.search);
+    const emailFromQuery = params.get('email');
+    if (emailFromQuery) {
+      document.getElementById('resetEmail').value = emailFromQuery;
+    }
+
+    document.getElementById('resetPasswordForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('resetPasswordBtn');
+      btn.disabled = true;
+      hideMessage(msg);
+
+      const email = document.getElementById('resetEmail').value.trim();
+      const code = document.getElementById('resetCode').value.trim();
+      const newPassword = document.getElementById('resetNewPassword').value;
+      const confirm = document.getElementById('resetConfirmPassword').value;
+      if (newPassword !== confirm) {
+        showMessage(msg, 'Passwords do not match.', 'error');
+        btn.disabled = false;
+        return;
+      }
+
+      try {
+        const data = await api('/api/auth/reset-password', {
+          method: 'POST',
+          body: JSON.stringify({ email, code, newPassword }),
+        });
+        showMessage(msg, data.message, 'success');
+        setTimeout(() => { window.location.href = data.redirect || '/login.html'; }, 900);
+      } catch (err) {
+        showMessage(msg, err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function initChangePasswordPage() {
+    const msg = document.getElementById('message');
+    checkAuth().catch(() => { window.location.href = '/login.html'; });
+
+    document.getElementById('changePasswordForm')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('changePasswordBtn');
+      btn.disabled = true;
+      hideMessage(msg);
+
+      const currentPassword = document.getElementById('currentPassword').value;
+      const newPassword = document.getElementById('newPassword').value;
+      const confirm = document.getElementById('confirmNewPassword').value;
+
+      if (newPassword !== confirm) {
+        showMessage(msg, 'Passwords do not match.', 'error');
+        btn.disabled = false;
+        return;
+      }
+
+      try {
+        const data = await api('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword, newPassword }),
+        });
+        showMessage(msg, data.message, 'success');
+        document.getElementById('currentPassword').value = '';
+        document.getElementById('newPassword').value = '';
+        document.getElementById('confirmNewPassword').value = '';
+      } catch (err) {
+        showMessage(msg, err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   function initVerifyEmailPage() {
     const msg = document.getElementById('message');
     const timerEl = document.getElementById('timer');
@@ -328,6 +434,9 @@ const App = (function () {
 
   return {
     initLoginPage,
+    initForgotPasswordPage,
+    initResetPasswordPage,
+    initChangePasswordPage,
     initVerifyEmailPage,
     initSetupAuthPage,
     initMfaPage,
