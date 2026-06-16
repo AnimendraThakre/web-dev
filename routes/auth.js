@@ -1,12 +1,21 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { sendOtpEmail } = require('../utils/mailer');
+const { config } = require('../config/env');
+const { respondWithError } = require('../middleware/errorHandler');
 const { findByEmail, findById, createUser, updateUser } = require('../models/User');
+const { sendEmailOtp } = require('../utils/mailer');
+const {
+  generateEmailOtp,
+  isValidEmailOtp,
+  hashEmailOtp,
+  verifyEmailOtp,
+  getEmailOtpExpiry,
+} = require('../utils/emailOtp');
+const { generateTotpSetup } = require('../utils/totp');
 
 const router = express.Router();
 const SALT_ROUNDS = 10;
-const OTP_EXPIRY_MS = 5 * 60 * 1000;
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -20,51 +29,71 @@ function isValidName(name) {
   return typeof name === 'string' && name.trim().length >= 2 && name.trim().length <= 100;
 }
 
-function generateOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+function signToken(userId, type, expiresIn) {
+  return jwt.sign({ sub: userId, type }, config.jwtMfaSecret, { expiresIn });
 }
 
 function signMfaPendingToken(userId) {
-  return jwt.sign(
-    { sub: userId, type: 'mfa_pending' },
-    process.env.JWT_MFA_SECRET,
-    { expiresIn: '10m' }
-  );
+  return signToken(userId, 'mfa_pending', '10m');
+}
+
+function signVerifyEmailToken(userId) {
+  return signToken(userId, 'verify_email_pending', '15m');
+}
+
+function signSetupMfaToken(userId) {
+  return signToken(userId, 'setup_mfa_pending', '15m');
 }
 
 function signAuthToken(user) {
   return jwt.sign(
-    {
-      sub: user._id,
-      email: user.email,
-      fullName: user.fullName,
-      type: 'auth',
-    },
-    process.env.JWT_SECRET,
+    { sub: user._id, email: user.email, fullName: user.fullName, type: 'auth' },
+    config.jwtSecret,
     { expiresIn: '24h' }
   );
 }
 
-function setAuthCookie(res, token) {
-  const maxAge = Number(process.env.COOKIE_MAX_AGE_MS) || 86400000;
-  res.cookie('token', token, {
+function setCookie(res, name, token, maxAge) {
+  res.cookie(name, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: config.isProduction,
     sameSite: 'lax',
     maxAge,
   });
 }
 
-function setMfaPendingCookie(res, token) {
-  res.cookie('mfa_token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 10 * 60 * 1000,
-  });
+function setAuthCookie(res, token) {
+  setCookie(res, 'token', token, config.cookieMaxAgeMs);
 }
 
-// POST /api/auth/signup
+function setMfaPendingCookie(res, token) {
+  setCookie(res, 'mfa_token', token, 10 * 60 * 1000);
+}
+
+function setVerifyEmailCookie(res, token) {
+  setCookie(res, 'verify_email_token', token, 15 * 60 * 1000);
+}
+
+function setSetupMfaCookie(res, token) {
+  setCookie(res, 'setup_mfa_token', token, 15 * 60 * 1000);
+}
+
+function getTokenUserId(req, cookieName, expectedType) {
+  const token = req.cookies?.[cookieName];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtMfaSecret);
+    if (payload.type !== expectedType) return null;
+    return payload.sub;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/auth/signup
+ * Creates inactive account, sends email OTP, redirects to email verification.
+ */
 router.post('/signup', async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
@@ -79,29 +108,134 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Password must be 6–128 characters.' });
     }
 
-    const existing = await findByEmail(email);
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await findByEmail(normalizedEmail);
     if (existing) {
       return res.status(409).json({ error: 'Email already registered.' });
     }
 
-    const hashed = await bcrypt.hash(password, SALT_ROUNDS);
-    await createUser({
+    const otp = generateEmailOtp();
+    const otpHash = await hashEmailOtp(otp);
+    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+    const user = await createUser({
       fullName: fullName.trim(),
-      email: email.trim().toLowerCase(),
-      password: hashed,
+      email: normalizedEmail,
+      password: hashedPassword,
+      isEmailVerified: false,
+      mfaEnabled: false,
+      totpSecret: null,
+      emailOtpHash: otpHash,
+      emailOtpExpiresAt: getEmailOtpExpiry(),
     });
 
-    res.status(201).json({ message: 'Account created successfully. You can log in now.' });
+    const mailResult = await sendEmailOtp(user.email, otp, user.fullName);
+    setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
+
+    const response = {
+      message: mailResult.sent
+        ? 'Verification code sent to your email.'
+        : 'Account created. Check server console for OTP (dev mode).',
+      redirect: '/verify-email.html',
+    };
+    if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+    res.status(201).json(response);
   } catch (err) {
-    if (err.code === 11000) {
-      return res.status(409).json({ error: 'Email already registered.' });
-    }
-    console.error('Signup error:', err);
-    res.status(500).json({ error: 'Server error during sign up.' });
+    respondWithError(res, err, 'Server error during sign up.');
   }
 });
 
-// POST /api/auth/login — password only; issues MFA pending, sends OTP
+/**
+ * POST /api/auth/verify-email
+ * Verifies email OTP, activates account, generates Google Authenticator QR.
+ */
+router.post('/verify-email', async (req, res) => {
+  try {
+    const userId = getTokenUserId(req, 'verify_email_token', 'verify_email_pending');
+    if (!userId) {
+      return res.status(401).json({ error: 'Verification session expired. Sign up again.' });
+    }
+
+    const { code } = req.body;
+    if (!isValidEmailOtp(code)) {
+      return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
+    }
+
+    const user = await findById(userId, { includeEmailOtp: true, includeTotpSecret: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    if (user.isEmailVerified) {
+      return res.status(400).json({ error: 'Email already verified.' });
+    }
+    if (!user.emailOtpHash || !user.emailOtpExpiresAt) {
+      return res.status(400).json({ error: 'No active code. Request a new one.' });
+    }
+    if (new Date() > new Date(user.emailOtpExpiresAt)) {
+      return res.status(400).json({ error: 'Code expired. Request a new one.' });
+    }
+
+    const valid = await verifyEmailOtp(code, user.emailOtpHash);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid verification code.' });
+    }
+
+    const { base32Secret, qrCodeDataUrl } = await generateTotpSetup(user.email);
+
+    await updateUser(user, {
+      isEmailVerified: true,
+      emailOtpHash: null,
+      emailOtpExpiresAt: null,
+      totpSecret: base32Secret,
+      mfaEnabled: false,
+    });
+
+    res.clearCookie('verify_email_token');
+    setSetupMfaCookie(res, signSetupMfaToken(user._id));
+
+    res.json({
+      message: 'Email verified! Set up Google Authenticator to finish registration.',
+      qrCodeDataUrl,
+      redirect: '/setup-auth.html',
+    });
+  } catch (err) {
+    respondWithError(res, err, 'Email verification failed.');
+  }
+});
+
+/** POST /api/auth/resend-email-otp */
+router.post('/resend-email-otp', async (req, res) => {
+  try {
+    const userId = getTokenUserId(req, 'verify_email_token', 'verify_email_pending');
+    if (!userId) {
+      return res.status(401).json({ error: 'Verification session expired. Sign up again.' });
+    }
+
+    const user = await findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user.isEmailVerified) {
+      return res.status(400).json({ error: 'Email already verified.' });
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = await hashEmailOtp(otp);
+    await updateUser(user, { emailOtpHash: otpHash, emailOtpExpiresAt: getEmailOtpExpiry() });
+
+    const mailResult = await sendEmailOtp(user.email, otp, user.fullName);
+    const response = {
+      message: mailResult.sent ? 'New code sent to your email.' : 'New code generated (dev mode).',
+    };
+    if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+    res.json(response);
+  } catch (err) {
+    respondWithError(res, err, 'Could not resend code.');
+  }
+});
+
+/**
+ * POST /api/auth/login
+ * Email + password, then Google Authenticator TOTP if MFA enabled.
+ */
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -113,7 +247,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Password is required.' });
     }
 
-    const user = await findByEmail(email);
+    const user = await findByEmail(email, { includeTotpSecret: true });
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
@@ -123,69 +257,68 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
-    const otp = generateOtp();
-    const otpHash = await bcrypt.hash(otp, SALT_ROUNDS);
-    const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
+    if (!user.isEmailVerified) {
+      setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
+      return res.status(403).json({
+        error: 'Please verify your email first.',
+        redirect: '/verify-email.html',
+      });
+    }
 
-    await updateUser(user, { otp: otpHash, otpExpiresAt });
-
-    const mailResult = await sendOtpEmail(user.email, otp, user.fullName);
+    if (!user.mfaEnabled || !user.totpSecret) {
+      setSetupMfaCookie(res, signSetupMfaToken(user._id));
+      return res.status(403).json({
+        error: 'Please complete Google Authenticator setup.',
+        redirect: '/setup-auth.html',
+        needsMfaSetup: true,
+      });
+    }
 
     const mfaToken = signMfaPendingToken(user._id);
     setMfaPendingCookie(res, mfaToken);
-
-    const response = {
-      message: mailResult.sent
-        ? 'Verification code sent to your email.'
-        : 'Verification code generated (check server console — SMTP not configured).',
+    return res.json({
+      message: 'Enter the code from Google Authenticator.',
+      mfaRequired: true,
       redirect: '/mfa.html',
-    };
-    if (mailResult.devOtp) {
-      response.devOtp = mailResult.devOtp;
-    }
-    res.json(response);
-  } catch (err) {
-    console.error('Login error:', err);
-    const status = err.message?.includes('verification email') ? 503 : 500;
-    res.status(status).json({
-      error: err.message || 'Server error during login.',
     });
+  } catch (err) {
+    respondWithError(res, err, 'Server error during login.');
   }
 });
 
-// POST /api/auth/logout
 router.post('/logout', (req, res) => {
   res.clearCookie('token');
   res.clearCookie('mfa_token');
+  res.clearCookie('verify_email_token');
+  res.clearCookie('setup_mfa_token');
   res.json({ message: 'Logged out successfully.' });
 });
 
-// GET /api/auth/me — current authenticated user
 router.get('/me', async (req, res) => {
   const token = req.cookies?.token;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated.' });
-  }
+  if (!token) return res.status(401).json({ error: 'Not authenticated.' });
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    if (payload.type !== 'auth') {
-      return res.status(401).json({ error: 'Invalid session.' });
-    }
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (payload.type !== 'auth') return res.status(401).json({ error: 'Invalid session.' });
     const user = await findById(payload.sub);
-    if (!user) {
-      return res.status(401).json({ error: 'User not found.' });
-    }
+    if (!user) return res.status(401).json({ error: 'User not found.' });
     res.json({
       fullName: user.fullName,
       email: user.email,
+      isEmailVerified: Boolean(user.isEmailVerified),
+      mfaEnabled: Boolean(user.mfaEnabled),
     });
   } catch {
     res.status(401).json({ error: 'Invalid or expired session.' });
   }
 });
 
-// Export helpers for otp route
 router.signAuthToken = signAuthToken;
 router.setAuthCookie = setAuthCookie;
+router.setMfaPendingCookie = setMfaPendingCookie;
+router.signMfaPendingToken = signMfaPendingToken;
+router.signSetupMfaToken = signSetupMfaToken;
+router.setSetupMfaCookie = setSetupMfaCookie;
+router.getTokenUserId = getTokenUserId;
 
 module.exports = router;

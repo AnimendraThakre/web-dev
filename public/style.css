@@ -190,6 +190,19 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.qr-wrap {
+  text-align: center;
+  margin: 16px 0;
+}
+
+.qr-wrap img {
+  max-width: 200px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
 @media (max-width: 480px) {
   .auth-container,
   .dashboard-container {

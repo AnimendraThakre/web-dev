@@ -1,25 +1,157 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { config } = require('../config/env');
+const { respondWithError } = require('../middleware/errorHandler');
 const { findById, updateUser } = require('../models/User');
-const { sendOtpEmail } = require('../utils/mailer');
+const { verifyTotpCode, isValidTotpToken, generateTotpSetup, qrFromSecret } = require('../utils/totp');
 const authRouter = require('./auth');
 
 const router = express.Router();
 
 function getMfaUserId(req) {
-  const token = req.cookies?.mfa_token;
-  if (!token) return null;
+  return authRouter.getTokenUserId(req, 'mfa_token', 'mfa_pending');
+}
+
+function getSetupMfaUserId(req) {
+  return authRouter.getTokenUserId(req, 'setup_mfa_token', 'setup_mfa_pending');
+}
+
+function requireAuth(req, res, next) {
+  const token = req.cookies?.token;
+  if (!token) return res.status(401).json({ error: 'Authentication required.' });
   try {
-    const payload = jwt.verify(token, process.env.JWT_MFA_SECRET);
-    if (payload.type !== 'mfa_pending') return null;
-    return payload.sub;
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (payload.type !== 'auth') return res.status(401).json({ error: 'Invalid session.' });
+    req.userId = payload.sub;
+    next();
   } catch {
-    return null;
+    res.status(401).json({ error: 'Invalid or expired session.' });
   }
 }
 
-// POST /api/otp/verify
+/**
+ * GET /api/otp/setup-info — QR for users completing setup after login redirect
+ */
+router.get('/setup-info', async (req, res) => {
+  try {
+    const userId = getSetupMfaUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Setup session expired. Log in again.' });
+    }
+
+    const user = await findById(userId, { includeTotpSecret: true });
+    if (!user || !user.isEmailVerified) {
+      return res.status(400).json({ error: 'Complete email verification first.' });
+    }
+    if (user.mfaEnabled) {
+      return res.status(400).json({ error: 'MFA already enabled.' });
+    }
+
+    let qrCodeDataUrl;
+    if (user.totpSecret) {
+      qrCodeDataUrl = await qrFromSecret(user.email, user.totpSecret);
+    } else {
+      const setup = await generateTotpSetup(user.email);
+      await updateUser(user, { totpSecret: setup.base32Secret });
+      qrCodeDataUrl = setup.qrCodeDataUrl;
+    }
+
+    res.json({ qrCodeDataUrl, message: 'Scan the QR code with Google Authenticator.' });
+  } catch (err) {
+    respondWithError(res, err, 'Could not load MFA setup.');
+  }
+});
+
+/**
+ * POST /api/otp/enable-setup — Confirm first TOTP after registration email verify
+ */
+router.post('/enable-setup', async (req, res) => {
+  try {
+    const userId = getSetupMfaUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Setup session expired. Log in again.' });
+    }
+
+    const { code } = req.body;
+    if (!isValidTotpToken(code)) {
+      return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
+    }
+
+    const user = await findById(userId, { includeTotpSecret: true });
+    if (!user || !user.isEmailVerified) {
+      return res.status(400).json({ error: 'Complete email verification first.' });
+    }
+    if (!user.totpSecret) {
+      return res.status(400).json({ error: 'MFA setup not started.' });
+    }
+
+    const valid = verifyTotpCode(user.totpSecret, code);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid code. Check Google Authenticator.' });
+    }
+
+    await updateUser(user, { mfaEnabled: true });
+    res.clearCookie('setup_mfa_token');
+
+    res.json({
+      message: 'Google Authenticator enabled! You can log in now.',
+      redirect: '/login.html',
+    });
+  } catch (err) {
+    respondWithError(res, err, 'Could not enable MFA.');
+  }
+});
+
+/** POST /api/otp/setup — Dashboard: regenerate QR for logged-in users (existing feature) */
+router.post('/setup', requireAuth, async (req, res) => {
+  try {
+    const user = await findById(req.userId, { includeTotpSecret: true });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (!user.isEmailVerified) {
+      return res.status(400).json({ error: 'Verify your email first.' });
+    }
+    if (user.mfaEnabled) {
+      return res.status(400).json({ error: 'MFA is already enabled.' });
+    }
+
+    const { base32Secret, qrCodeDataUrl } = await generateTotpSetup(user.email);
+    await updateUser(user, { totpSecret: base32Secret, mfaEnabled: false });
+
+    res.json({
+      message: 'Scan the QR code with Google Authenticator.',
+      qrCodeDataUrl,
+    });
+  } catch (err) {
+    respondWithError(res, err, 'Could not start MFA setup.');
+  }
+});
+
+/** POST /api/otp/enable — Dashboard: enable MFA for logged-in users (existing feature) */
+router.post('/enable', requireAuth, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!isValidTotpToken(code)) {
+      return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
+    }
+
+    const user = await findById(req.userId, { includeTotpSecret: true });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user.mfaEnabled) return res.status(400).json({ error: 'MFA is already enabled.' });
+    if (!user.totpSecret) return res.status(400).json({ error: 'Start MFA setup first.' });
+
+    const valid = verifyTotpCode(user.totpSecret, code);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid code. Check Google Authenticator.' });
+    }
+
+    await updateUser(user, { mfaEnabled: true });
+    res.json({ message: 'Google Authenticator MFA enabled successfully.' });
+  } catch (err) {
+    respondWithError(res, err, 'Could not enable MFA.');
+  }
+});
+
+/** POST /api/otp/verify — Login step 2: TOTP verification */
 router.post('/verify', async (req, res) => {
   try {
     const userId = getMfaUserId(req);
@@ -27,27 +159,21 @@ router.post('/verify', async (req, res) => {
       return res.status(401).json({ error: 'MFA session expired. Please log in again.' });
     }
 
-    const { otp } = req.body;
-    if (!otp || !/^\d{6}$/.test(String(otp).trim())) {
+    const { otp, code } = req.body;
+    const token = otp || code;
+    if (!isValidTotpToken(token)) {
       return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
     }
 
-    const user = await findById(userId);
-    if (!user || !user.otp || !user.otpExpiresAt) {
-      return res.status(400).json({ error: 'No active verification code. Log in again.' });
+    const user = await findById(userId, { includeTotpSecret: true });
+    if (!user || !user.isEmailVerified || !user.mfaEnabled || !user.totpSecret) {
+      return res.status(400).json({ error: 'MFA is not configured for this account.' });
     }
 
-    if (new Date() > new Date(user.otpExpiresAt)) {
-      await updateUser(user, { otp: null, otpExpiresAt: null });
-      return res.status(400).json({ error: 'Code expired. Please log in again.' });
-    }
-
-    const valid = await bcrypt.compare(String(otp).trim(), user.otp);
+    const valid = verifyTotpCode(user.totpSecret, token);
     if (!valid) {
-      return res.status(401).json({ error: 'Invalid verification code.' });
+      return res.status(401).json({ error: 'Invalid authenticator code.' });
     }
-
-    await updateUser(user, { otp: null, otpExpiresAt: null });
 
     const authToken = authRouter.signAuthToken(user);
     authRouter.setAuthCookie(res, authToken);
@@ -58,46 +184,7 @@ router.post('/verify', async (req, res) => {
       redirect: '/dashboard.html',
     });
   } catch (err) {
-    console.error('OTP verify error:', err);
-    res.status(500).json({ error: 'Server error during verification.' });
-  }
-});
-
-// POST /api/otp/resend
-router.post('/resend', async (req, res) => {
-  try {
-    const userId = getMfaUserId(req);
-    if (!userId) {
-      return res.status(401).json({ error: 'MFA session expired. Please log in again.' });
-    }
-
-    const user = await findById(userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
-    const otpHash = await bcrypt.hash(otp, 10);
-    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
-    await updateUser(user, { otp: otpHash, otpExpiresAt });
-
-    const mailResult = await sendOtpEmail(user.email, otp, user.fullName, { isResend: true });
-
-    const response = {
-      message: mailResult.sent
-        ? 'New code sent to your email.'
-        : 'New code generated (check server console — SMTP not configured).',
-    };
-    if (mailResult.devOtp) {
-      response.devOtp = mailResult.devOtp;
-    }
-    res.json(response);
-  } catch (err) {
-    console.error('OTP resend error:', err);
-    const status = err.message?.includes('verification email') ? 503 : 500;
-    res.status(status).json({
-      error: err.message || 'Could not resend code.',
-    });
+    respondWithError(res, err, 'Server error during verification.');
   }
 });
 
