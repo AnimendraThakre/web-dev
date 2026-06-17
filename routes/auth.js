@@ -13,9 +13,11 @@ const {
   getEmailOtpExpiry,
 } = require('../utils/emailOtp');
 const { generateTotpSetup } = require('../utils/totp');
+const { logActivity } = require('../models/AuthActivity');
 
 const router = express.Router();
 const SALT_ROUNDS = 10;
+const ROLES = { USER: 'user', ADMIN: 'admin' };
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -41,12 +43,12 @@ function getAuthUserId(req) {
   }
 }
 
-function signToken(userId, type, expiresIn) {
-  return jwt.sign({ sub: userId, type }, config.jwtMfaSecret, { expiresIn });
+function signToken(userId, type, expiresIn, extra = {}) {
+  return jwt.sign({ sub: userId, type, ...extra }, config.jwtMfaSecret, { expiresIn });
 }
 
-function signMfaPendingToken(userId) {
-  return signToken(userId, 'mfa_pending', '10m');
+function signMfaPendingToken(userId, portal = ROLES.USER) {
+  return signToken(userId, 'mfa_pending', '10m', { portal });
 }
 
 function signVerifyEmailToken(userId) {
@@ -59,10 +61,28 @@ function signSetupMfaToken(userId) {
 
 function signAuthToken(user) {
   return jwt.sign(
-    { sub: user._id, email: user.email, fullName: user.fullName, type: 'auth' },
+    {
+      sub: user._id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role || ROLES.USER,
+      type: 'auth',
+    },
     config.jwtSecret,
     { expiresIn: '24h' }
   );
+}
+
+function getMfaSession(req) {
+  const token = req.cookies?.mfa_token;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtMfaSecret);
+    if (payload.type !== 'mfa_pending') return null;
+    return { userId: payload.sub, portal: payload.portal || ROLES.USER };
+  } catch {
+    return null;
+  }
 }
 
 function setCookie(res, name, token, maxAge) {
@@ -134,6 +154,8 @@ router.post('/signup', async (req, res) => {
       fullName: fullName.trim(),
       email: normalizedEmail,
       password: hashedPassword,
+      role: ROLES.USER,
+      isDisabled: false,
       isEmailVerified: false,
       mfaEnabled: false,
       totpSecret: null,
@@ -245,56 +267,123 @@ router.post('/resend-email-otp', async (req, res) => {
 });
 
 /**
- * POST /api/auth/login
- * Email + password, then Google Authenticator TOTP if MFA enabled.
+ * Shared login handler for user and admin portals (MFA required).
+ */
+async function handleLogin(req, res, expectedRole) {
+  const { email, password } = req.body;
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Invalid email address.' });
+  }
+  if (!password || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Password is required.' });
+  }
+
+  const user = await findByEmail(email, { includeTotpSecret: true });
+  if (!user) {
+    await logActivity({
+      email: email.trim().toLowerCase(),
+      action: 'login_failed',
+      role: expectedRole,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      meta: { reason: 'unknown_email' },
+    });
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) {
+    await logActivity({
+      email: user.email,
+      userId: user._id,
+      action: 'login_failed',
+      role: user.role || ROLES.USER,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      meta: { reason: 'bad_password' },
+    });
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  const userRole = user.role || ROLES.USER;
+  if (userRole !== expectedRole) {
+    const redirect = expectedRole === ROLES.ADMIN ? '/login.html' : '/admin-login.html';
+    const msg = expectedRole === ROLES.ADMIN
+      ? 'This account is not an admin. Use user login.'
+      : 'Admin accounts must use the admin login page.';
+    return res.status(403).json({ error: msg, redirect });
+  }
+
+  if (user.isDisabled) {
+    await logActivity({
+      email: user.email,
+      userId: user._id,
+      action: 'login_blocked',
+      role: userRole,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      meta: { reason: 'disabled' },
+    });
+    return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
+  }
+
+  if (!user.isEmailVerified) {
+    setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
+    return res.status(403).json({
+      error: 'Please verify your email first.',
+      redirect: '/verify-email.html',
+    });
+  }
+
+  if (!user.mfaEnabled || !user.totpSecret) {
+    setSetupMfaCookie(res, signSetupMfaToken(user._id));
+    return res.status(403).json({
+      error: 'Please complete Google Authenticator setup.',
+      redirect: '/setup-auth.html',
+      needsMfaSetup: true,
+    });
+  }
+
+  const mfaToken = signMfaPendingToken(user._id, expectedRole);
+  setMfaPendingCookie(res, mfaToken);
+
+  await logActivity({
+    email: user.email,
+    userId: user._id,
+    action: 'login_password_ok',
+    role: userRole,
+    ip: req.ip,
+    userAgent: req.get('user-agent'),
+  });
+
+  const mfaPage = expectedRole === ROLES.ADMIN ? '/admin-mfa.html' : '/mfa.html';
+  return res.json({
+    message: 'Enter the code from Google Authenticator.',
+    mfaRequired: true,
+    redirect: mfaPage,
+  });
+}
+
+/**
+ * POST /api/auth/login — User portal only.
  */
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ error: 'Invalid email address.' });
-    }
-    if (!password || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Password is required.' });
-    }
-
-    const user = await findByEmail(email, { includeTotpSecret: true });
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
-    }
-
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
-    }
-
-    if (!user.isEmailVerified) {
-      setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
-      return res.status(403).json({
-        error: 'Please verify your email first.',
-        redirect: '/verify-email.html',
-      });
-    }
-
-    if (!user.mfaEnabled || !user.totpSecret) {
-      setSetupMfaCookie(res, signSetupMfaToken(user._id));
-      return res.status(403).json({
-        error: 'Please complete Google Authenticator setup.',
-        redirect: '/setup-auth.html',
-        needsMfaSetup: true,
-      });
-    }
-
-    const mfaToken = signMfaPendingToken(user._id);
-    setMfaPendingCookie(res, mfaToken);
-    return res.json({
-      message: 'Enter the code from Google Authenticator.',
-      mfaRequired: true,
-      redirect: '/mfa.html',
-    });
+    await handleLogin(req, res, ROLES.USER);
   } catch (err) {
     respondWithError(res, err, 'Server error during login.');
+  }
+});
+
+/**
+ * POST /api/auth/admin/login — Admin portal only.
+ */
+router.post('/admin/login', async (req, res) => {
+  try {
+    await handleLogin(req, res, ROLES.ADMIN);
+  } catch (err) {
+    respondWithError(res, err, 'Server error during admin login.');
   }
 });
 
@@ -438,9 +527,12 @@ router.get('/me', async (req, res) => {
     if (payload.type !== 'auth') return res.status(401).json({ error: 'Invalid session.' });
     const user = await findById(payload.sub);
     if (!user) return res.status(401).json({ error: 'User not found.' });
+    if (user.isDisabled) return res.status(403).json({ error: 'Account is disabled.' });
     res.json({
       fullName: user.fullName,
       email: user.email,
+      role: user.role || ROLES.USER,
+      isDisabled: Boolean(user.isDisabled),
       isEmailVerified: Boolean(user.isEmailVerified),
       mfaEnabled: Boolean(user.mfaEnabled),
     });
@@ -453,6 +545,8 @@ router.signAuthToken = signAuthToken;
 router.setAuthCookie = setAuthCookie;
 router.setMfaPendingCookie = setMfaPendingCookie;
 router.signMfaPendingToken = signMfaPendingToken;
+router.getMfaSession = getMfaSession;
+router.ROLES = ROLES;
 router.signSetupMfaToken = signSetupMfaToken;
 router.setSetupMfaCookie = setSetupMfaCookie;
 router.getTokenUserId = getTokenUserId;

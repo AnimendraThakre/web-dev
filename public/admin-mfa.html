@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin MFA Verification</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="auth-container admin-theme">
+    <div class="mfa-icon" aria-hidden="true">🔐</div>
+    <h2>Admin Verification</h2>
+    <p class="subtitle">Enter the 6-digit code from Google Authenticator</p>
+
+    <div id="message" class="message" role="alert"></div>
+    <p class="timer">Codes refresh every 30 seconds</p>
+
+    <form id="adminMfaForm" novalidate>
+      <label for="adminOtp">Authenticator code</label>
+      <input type="text" id="adminOtp" class="otp-input" placeholder="000000"
+        inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+
+      <div class="button-group">
+        <button type="submit" class="btn-login" id="adminVerifyBtn">Verify &amp; Continue</button>
+        <a href="/admin-login.html" class="btn btn-link">Back to admin login</a>
+      </div>
+    </form>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>App.initAdminMfaPage();</script>
+</body>
+</html>
