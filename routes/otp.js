@@ -5,11 +5,12 @@ const { respondWithError } = require('../middleware/errorHandler');
 const { findById, updateUser } = require('../models/User');
 const { verifyTotpCode, isValidTotpToken, generateTotpSetup, qrFromSecret } = require('../utils/totp');
 const authRouter = require('./auth');
+const { logActivity } = require('../models/AuthActivity');
 
 const router = express.Router();
 
-function getMfaUserId(req) {
-  return authRouter.getTokenUserId(req, 'mfa_token', 'mfa_pending');
+function getMfaSession(req) {
+  return authRouter.getMfaSession(req);
 }
 
 function getSetupMfaUserId(req) {
@@ -23,6 +24,7 @@ function requireAuth(req, res, next) {
     const payload = jwt.verify(token, config.jwtSecret);
     if (payload.type !== 'auth') return res.status(401).json({ error: 'Invalid session.' });
     req.userId = payload.sub;
+    req.user = payload;
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired session.' });
@@ -154,8 +156,8 @@ router.post('/enable', requireAuth, async (req, res) => {
 /** POST /api/otp/verify — Login step 2: TOTP verification */
 router.post('/verify', async (req, res) => {
   try {
-    const userId = getMfaUserId(req);
-    if (!userId) {
+    const session = getMfaSession(req);
+    if (!session) {
       return res.status(401).json({ error: 'MFA session expired. Please log in again.' });
     }
 
@@ -165,13 +167,29 @@ router.post('/verify', async (req, res) => {
       return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
     }
 
-    const user = await findById(userId, { includeTotpSecret: true });
+    const user = await findById(session.userId, { includeTotpSecret: true });
     if (!user || !user.isEmailVerified || !user.mfaEnabled || !user.totpSecret) {
       return res.status(400).json({ error: 'MFA is not configured for this account.' });
+    }
+    if (user.isDisabled) {
+      return res.status(403).json({ error: 'Account is disabled.' });
+    }
+
+    const userRole = user.role || authRouter.ROLES.USER;
+    if (userRole !== session.portal) {
+      return res.status(403).json({ error: 'Invalid login portal for this account.' });
     }
 
     const valid = verifyTotpCode(user.totpSecret, token);
     if (!valid) {
+      await logActivity({
+        email: user.email,
+        userId: user._id,
+        action: 'mfa_failed',
+        role: userRole,
+        ip: req.ip,
+        userAgent: req.get('user-agent'),
+      });
       return res.status(401).json({ error: 'Invalid authenticator code.' });
     }
 
@@ -179,9 +197,23 @@ router.post('/verify', async (req, res) => {
     authRouter.setAuthCookie(res, authToken);
     res.clearCookie('mfa_token');
 
+    await logActivity({
+      email: user.email,
+      userId: user._id,
+      action: 'mfa_success',
+      role: userRole,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+    });
+
+    const redirect = session.portal === authRouter.ROLES.ADMIN
+      ? '/admin-dashboard.html'
+      : '/dashboard.html';
+
     res.json({
       message: 'Verification successful.',
-      redirect: '/dashboard.html',
+      redirect,
+      role: userRole,
     });
   } catch (err) {
     respondWithError(res, err, 'Server error during verification.');
