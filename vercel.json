@@ -2,7 +2,18 @@
   "version": 2,
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
-    { "source": "/", "destination": "/login.html" }
+    { "source": "/login", "destination": "/login.html" },
+    { "source": "/dashboard", "destination": "/dashboard.html" },
+    { "source": "/verify-email", "destination": "/verify-email.html" },
+    { "source": "/setup-auth", "destination": "/setup-auth.html" },
+    { "source": "/mfa", "destination": "/mfa.html" },
+    { "source": "/forgot-password", "destination": "/forgot-password.html" },
+    { "source": "/reset-password", "destination": "/reset-password.html" },
+    { "source": "/change-password", "destination": "/change-password.html" },
+    { "source": "/login", "destination": "/login.html" },
+    { "source": "/admin-login", "destination": "/admin-login.html" },
+    { "source": "/admin-dashboard", "destination": "/admin-dashboard.html" },
+    { "source": "/admin-mfa", "destination": "/admin-mfa.html" }
   ],
   "functions": {
     "api/index.js": {
