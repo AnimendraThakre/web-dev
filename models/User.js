@@ -9,16 +9,12 @@ const { config, isLocalMongoUri } = require('../config/env');
  * - totpSecret: encrypted TOTP secret (select: false)
  * - emailOtpHash / emailOtpExpiresAt: registration email OTP (select: false)
  * - resetOtpHash / resetOtpExpiresAt: forgot-password OTP (select: false)
- * - role: user | admin
- * - isDisabled: admin can disable user accounts
  */
 const userSchema = new mongoose.Schema(
   {
     fullName: { type: String, required: true, trim: true, maxlength: 100 },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true, maxlength: 254 },
     password: { type: String, required: true },
-    role: { type: String, enum: ['user', 'admin'], default: 'user' },
-    isDisabled: { type: Boolean, default: false },
     isEmailVerified: { type: Boolean, default: false },
     mfaEnabled: { type: Boolean, default: false },
     totpSecret: { type: String, default: null, select: false },
@@ -73,8 +69,7 @@ async function findByEmail(email, flags = {}) {
   const normalized = email.toLowerCase().trim();
   if (useMemory) {
     const user = memoryUsers.get(normalized) || null;
-    const needsSecrets = flags.includeTotpSecret || flags.includeEmailOtp || flags.includeResetOtp;
-    return needsSecrets ? decryptUserSecrets(user) : user;
+    return flags.includeTotpSecret || flags.includeEmailOtp ? decryptUserSecrets(user) : user;
   }
   const user = await applySelect(UserModel.findOne({ email: normalized }), flags);
   return flags.includeTotpSecret ? decryptUserSecrets(user) : user;
@@ -84,8 +79,7 @@ async function findById(id, flags = {}) {
   if (useMemory) {
     for (const user of memoryUsers.values()) {
       if (String(user._id) === String(id)) {
-        const needsSecrets = flags.includeTotpSecret || flags.includeEmailOtp || flags.includeResetOtp;
-        return needsSecrets ? decryptUserSecrets(user) : user;
+        return flags.includeTotpSecret || flags.includeEmailOtp ? decryptUserSecrets(user) : user;
       }
     }
     return null;
@@ -110,8 +104,6 @@ async function createUser(data) {
       fullName: payload.fullName,
       email,
       password: payload.password,
-      role: payload.role ?? 'user',
-      isDisabled: payload.isDisabled ?? false,
       isEmailVerified: payload.isEmailVerified ?? false,
       mfaEnabled: payload.mfaEnabled ?? false,
       totpSecret: payload.totpSecret ?? null,
@@ -150,32 +142,6 @@ async function updateUser(user, updates) {
   return user;
 }
 
-function sanitizeUser(user) {
-  if (!user) return null;
-  return {
-    _id: user._id,
-    fullName: user.fullName,
-    email: user.email,
-    role: user.role || 'user',
-    isDisabled: Boolean(user.isDisabled),
-    isEmailVerified: Boolean(user.isEmailVerified),
-    mfaEnabled: Boolean(user.mfaEnabled),
-    createdAt: user.createdAt,
-    updatedAt: user.updatedAt,
-  };
-}
-
-async function listUsers() {
-  if (useMemory) {
-    return Array.from(memoryUsers.values()).map(sanitizeUser);
-  }
-  const users = await UserModel.find()
-    .select('-password -totpSecret -emailOtpHash -emailOtpExpiresAt -resetOtpHash -resetOtpExpiresAt')
-    .sort({ createdAt: -1 })
-    .lean();
-  return users.map((u) => sanitizeUser(u));
-}
-
 let connectPromise = null;
 
 async function connectDB(uri = config.mongodbUri) {
@@ -185,8 +151,6 @@ async function connectDB(uri = config.mongodbUri) {
     }
     setMemoryMode(true);
     dbConnected = false;
-    const { ensureDefaultAdmin } = require('../utils/seedAdmin');
-    await ensureDefaultAdmin();
     return false;
   }
   if (mongoose.connection.readyState === 1) {
@@ -202,12 +166,10 @@ async function connectDB(uri = config.mongodbUri) {
   };
 
   connectPromise = mongoose.connect(uri, options)
-    .then(async () => {
+    .then(() => {
       console.log('[DB] Connected to MongoDB (TLS in transit)');
       setMemoryMode(false);
       dbConnected = true;
-      const { ensureDefaultAdmin } = require('../utils/seedAdmin');
-      await ensureDefaultAdmin();
       return true;
     })
     .catch((err) => {
@@ -241,5 +203,4 @@ module.exports = {
   findById,
   createUser,
   updateUser,
-  listUsers,
 };
