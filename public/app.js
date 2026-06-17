@@ -43,20 +43,8 @@ const App = (function () {
     }
   }
 
-  async function checkAuth(expectedRole) {
-    const user = await api('/api/auth/me');
-    if (expectedRole && user.role !== expectedRole) {
-      const err = new Error('Wrong portal for this account.');
-      err.status = 403;
-      err.user = user;
-      throw err;
-    }
-    return user;
-  }
-
-  function redirectByRole(user) {
-    if (user.role === 'admin') window.location.href = '/admin-dashboard.html';
-    else window.location.href = '/dashboard.html';
+  async function checkAuth() {
+    return api('/api/auth/me');
   }
 
   function bindOtpInput(id) {
@@ -98,7 +86,7 @@ const App = (function () {
     const msg = document.getElementById('message');
     initTabs();
 
-    checkAuth('user').then(redirectByRole).catch(() => {});
+    checkAuth().then(() => { window.location.href = '/dashboard.html'; }).catch(() => {});
 
     document.getElementById('loginResetBtn')?.addEventListener('click', () => {
       document.getElementById('loginEmail').value = '';
@@ -381,12 +369,8 @@ const App = (function () {
     const setupSection = document.getElementById('mfaSetupSection');
     const setupBtn = document.getElementById('setupMfaBtn');
 
-    checkAuth('user')
+    checkAuth()
       .then((user) => {
-        if (user.role === 'admin') {
-          window.location.href = '/admin-dashboard.html';
-          return;
-        }
         document.getElementById('welcomeMsg').textContent = `Welcome back, ${user.fullName}!`;
         document.getElementById('userName').textContent = user.fullName;
         document.getElementById('userEmail').textContent = user.email;
@@ -448,172 +432,8 @@ const App = (function () {
     });
   }
 
-  function initAdminLoginPage() {
-    const msg = document.getElementById('message');
-    checkAuth('admin').then(redirectByRole).catch(() => {});
-
-    document.getElementById('adminLoginForm')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById('adminLoginBtn');
-      btn.disabled = true;
-      hideMessage(msg);
-      try {
-        const data = await api('/api/auth/admin/login', {
-          method: 'POST',
-          body: JSON.stringify({
-            email: document.getElementById('adminEmail').value.trim(),
-            password: document.getElementById('adminPassword').value,
-          }),
-        });
-        showMessage(msg, data.message, 'success');
-        setTimeout(() => {
-          window.location.href = data.redirect || '/admin-mfa.html';
-        }, 600);
-      } catch (err) {
-        if (err.data?.redirect) {
-          showMessage(msg, err.message, 'info');
-          setTimeout(() => { window.location.href = err.data.redirect; }, 800);
-        } else {
-          showMessage(msg, err.message, 'error');
-        }
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  }
-
-  function initAdminMfaPage() {
-    const msg = document.getElementById('message');
-    bindOtpInput('adminOtp');
-
-    document.getElementById('adminMfaForm')?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById('adminVerifyBtn');
-      btn.disabled = true;
-      hideMessage(msg);
-      try {
-        const data = await api('/api/otp/verify', {
-          method: 'POST',
-          body: JSON.stringify({ code: document.getElementById('adminOtp').value.trim() }),
-        });
-        showMessage(msg, data.message, 'success');
-        window.location.href = data.redirect || '/admin-dashboard.html';
-      } catch (err) {
-        showMessage(msg, err.message, 'error');
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  }
-
-  function formatDate(iso) {
-    if (!iso) return '—';
-    return new Date(iso).toLocaleString();
-  }
-
-  function initAdminDashboardPage() {
-    const msg = document.getElementById('message');
-
-    checkAuth('admin')
-      .then((admin) => {
-        document.getElementById('adminWelcome').textContent = `Welcome, ${admin.fullName}`;
-        document.getElementById('adminName').textContent = admin.fullName;
-        document.getElementById('adminEmail').textContent = admin.email;
-        loadAdminUsers();
-        loadAdminActivity();
-      })
-      .catch((err) => {
-        if (err.user?.role === 'user') window.location.href = '/dashboard.html';
-        else window.location.href = '/admin-login.html';
-      });
-
-    async function loadAdminUsers() {
-      const tbody = document.getElementById('usersTableBody');
-      try {
-        const data = await api('/api/admin/users');
-        const users = data.users || [];
-        if (!users.length) {
-          tbody.innerHTML = '<tr><td colspan="6">No users found.</td></tr>';
-          return;
-        }
-        tbody.innerHTML = users.map((u) => {
-          const status = u.isDisabled
-            ? '<span class="badge badge-disabled">Disabled</span>'
-            : '<span class="badge badge-active">Active</span>';
-          const roleBadge = u.role === 'admin'
-            ? '<span class="badge badge-admin">admin</span>'
-            : '<span class="badge badge-user">user</span>';
-          const mfa = u.mfaEnabled ? 'Yes' : 'No';
-          let action = '—';
-          if (u.role !== 'admin') {
-            action = u.isDisabled
-              ? `<button type="button" class="btn-sm btn-ok" data-enable="${u._id}">Enable</button>`
-              : `<button type="button" class="btn-sm btn-warn" data-disable="${u._id}">Disable</button>`;
-          }
-          return `<tr>
-            <td>${u.fullName}</td>
-            <td>${u.email}</td>
-            <td>${roleBadge}</td>
-            <td>${status}</td>
-            <td>${mfa}</td>
-            <td>${action}</td>
-          </tr>`;
-        }).join('');
-
-        tbody.querySelectorAll('[data-disable]').forEach((btn) => {
-          btn.addEventListener('click', () => toggleUser(btn.dataset.disable, 'disable', msg));
-        });
-        tbody.querySelectorAll('[data-enable]').forEach((btn) => {
-          btn.addEventListener('click', () => toggleUser(btn.dataset.enable, 'enable', msg));
-        });
-      } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="6">${err.message}</td></tr>`;
-      }
-    }
-
-    async function loadAdminActivity() {
-      const tbody = document.getElementById('activityTableBody');
-      try {
-        const data = await api('/api/admin/activity');
-        const rows = data.activity || [];
-        if (!rows.length) {
-          tbody.innerHTML = '<tr><td colspan="4">No activity yet.</td></tr>';
-          return;
-        }
-        tbody.innerHTML = rows.map((a) => `<tr>
-          <td>${formatDate(a.createdAt)}</td>
-          <td>${a.email || '—'}</td>
-          <td>${a.action}</td>
-          <td>${a.role || '—'}</td>
-        </tr>`).join('');
-      } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="4">${err.message}</td></tr>`;
-      }
-    }
-
-    async function toggleUser(id, action, msgEl) {
-      hideMessage(msgEl);
-      try {
-        const data = await api(`/api/admin/users/${id}/${action}`, { method: 'POST', body: '{}' });
-        showMessage(msgEl, data.message, 'success');
-        loadAdminUsers();
-        loadAdminActivity();
-      } catch (err) {
-        showMessage(msgEl, err.message, 'error');
-      }
-    }
-
-    document.getElementById('adminLogoutBtn')?.addEventListener('click', async () => {
-      try { await api('/api/auth/logout', { method: 'POST', body: '{}' }); } catch { /* ok */ }
-      window.location.href = '/admin-login.html';
-    });
-  }
-
   return {
     initLoginPage,
-    initAdminLoginPage,
-    initAdminMfaPage,
-    initAdminDashboardPage,
     initForgotPasswordPage,
     initResetPasswordPage,
     initChangePasswordPage,
