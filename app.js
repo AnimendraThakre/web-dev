@@ -83,12 +83,34 @@ function requireAuth(req, res, next) {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/otp', otpRoutes);
+app.use('/api/admin', require('./routes/admin'));
 
 app.get('/api/protected/dashboard', requireAuth, (req, res) => {
   res.json({
     message: 'Welcome to your dashboard',
     fullName: req.user.fullName,
     email: req.user.email,
+  });
+});
+
+// Friendly URLs → static HTML pages (no .html in address bar)
+const htmlPages = [
+  'login',
+  'admin-login',
+  'dashboard',
+  'admin-dashboard',
+  'admin-mfa',
+  'verify-email',
+  'setup-auth',
+  'mfa',
+  'forgot-password',
+  'reset-password',
+  'change-password',
+];
+htmlPages.forEach((page) => {
+  app.get(`/${page}`, (req, res) => {
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    res.redirect(302, `/${page}.html${qs}`);
   });
 });
 
