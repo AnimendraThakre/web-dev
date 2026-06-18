@@ -1,12 +1,16 @@
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const { Pool, neonConfig } = require('@neondatabase/serverless');
+const ws = require('ws');
 const { config } = require('../config/env');
+
+neonConfig.webSocketConstructor = ws;
 
 let pool = null;
 let dbConnected = false;
 let useMemory = false;
 let connectPromise = null;
+let lastConnectError = null;
 
 function getPostgresUrl() {
   return config.postgresUrl;
@@ -44,13 +48,21 @@ async function query(text, params = []) {
 async function runMigrations() {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf8');
-  await getPool().query(schema);
+  const statements = schema
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const statement of statements) {
+    await getPool().query(statement);
+  }
 }
 
 async function connectDB() {
   const url = getPostgresUrl();
 
   if (!url) {
+    lastConnectError = 'POSTGRES_URL not set';
     if (config.isProduction && config.isVercel) {
       console.error('[DB] POSTGRES_URL not set on Vercel — using in-memory store.');
     }
@@ -66,25 +78,21 @@ async function connectDB() {
 
   connectPromise = (async () => {
     try {
-      pool = new Pool({
-        connectionString: url,
-        ssl: url.includes('localhost') || url.includes('127.0.0.1')
-          ? false
-          : { rejectUnauthorized: false },
-        max: config.isVercel ? 1 : 10,
-      });
+      pool = new Pool({ connectionString: url });
 
       await pool.query('SELECT 1');
       await runMigrations();
 
       setMemoryMode(false);
       dbConnected = true;
+      lastConnectError = null;
       console.log('[DB] Connected to PostgreSQL (Neon)');
 
       const { ensureDefaultAdmin } = require('../utils/seedAdmin');
       await ensureDefaultAdmin();
       return true;
     } catch (err) {
+      lastConnectError = err.message;
       console.warn('[DB] PostgreSQL unavailable:', err.message);
       if (pool) {
         await pool.end().catch(() => {});
@@ -106,7 +114,9 @@ function getDbStatus() {
   return {
     mode: useMemory ? 'memory' : 'postgres',
     provider: useMemory ? null : 'neon',
+    configured: isPostgresConfigured(),
     connected: isDbConnected(),
+    lastError: lastConnectError,
     encryptionAtRest: useMemory ? false : 'neon-managed',
     fieldEncryption: require('../utils/fieldCrypto').isEncryptionConfigured(),
   };
