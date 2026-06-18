@@ -93,6 +93,29 @@ body.page-admin .dashboard-container {
   }
 }
 
+/* Activity log scrolls independently — page stays fixed */
+.panel-activity .table-wrap {
+  max-height: min(65vh, 520px);
+  overflow-y: auto;
+  overflow-x: auto;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+}
+
+.panel-activity .data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f1f3f5;
+  box-shadow: 0 1px 0 #e9ecef;
+}
+
+@media (max-width: 1099px) {
+  .panel-activity .table-wrap {
+    max-height: 400px;
+  }
+}
+
 body.page-dashboard .section-title {
   text-align: left;
 }
