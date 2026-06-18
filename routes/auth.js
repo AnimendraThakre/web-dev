@@ -13,7 +13,7 @@ const {
   getEmailOtpExpiry,
 } = require('../utils/emailOtp');
 const { generateTotpSetup } = require('../utils/totp');
-const { logActivity } = require('../models/AuthActivity');
+const { ACTIONS, logAuthEvent } = require('../utils/activityLogger');
 
 const router = express.Router();
 const SALT_ROUNDS = 10;
@@ -143,6 +143,11 @@ router.post('/signup', async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
     const existing = await findByEmail(normalizedEmail);
     if (existing) {
+      await logAuthEvent(req, {
+        email: normalizedEmail,
+        action: ACTIONS.SIGNUP_FAILED,
+        meta: { reason: 'email_taken' },
+      });
       return res.status(409).json({ error: 'Email already registered.' });
     }
 
@@ -165,6 +170,13 @@ router.post('/signup', async (req, res) => {
 
     const mailResult = await sendEmailOtp(user.email, otp, user.fullName);
     setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
+
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.SIGNUP,
+      role: user.role || ROLES.USER,
+    });
 
     const response = {
       message: mailResult.sent
@@ -211,6 +223,12 @@ router.post('/verify-email', async (req, res) => {
 
     const valid = await verifyEmailOtp(code, user.emailOtpHash);
     if (!valid) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.VERIFY_EMAIL_FAILED,
+        role: user.role || ROLES.USER,
+      });
       return res.status(401).json({ error: 'Invalid verification code.' });
     }
 
@@ -226,6 +244,13 @@ router.post('/verify-email', async (req, res) => {
 
     res.clearCookie('verify_email_token');
     setSetupMfaCookie(res, signSetupMfaToken(user._id));
+
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.VERIFY_EMAIL_SUCCESS,
+      role: user.role || ROLES.USER,
+    });
 
     res.json({
       message: 'Email verified! Set up Google Authenticator to finish registration.',
@@ -256,6 +281,12 @@ router.post('/resend-email-otp', async (req, res) => {
     await updateUser(user, { emailOtpHash: otpHash, emailOtpExpiresAt: getEmailOtpExpiry() });
 
     const mailResult = await sendEmailOtp(user.email, otp, user.fullName);
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.RESEND_EMAIL_OTP,
+      role: user.role || ROLES.USER,
+    });
     const response = {
       message: mailResult.sent ? 'New code sent to your email.' : 'New code generated (dev mode).',
     };
@@ -281,12 +312,10 @@ async function handleLogin(req, res, expectedRole) {
 
   const user = await findByEmail(email, { includeTotpSecret: true });
   if (!user) {
-    await logActivity({
+    await logAuthEvent(req, {
       email: email.trim().toLowerCase(),
-      action: 'login_failed',
+      action: ACTIONS.LOGIN_FAILED,
       role: expectedRole,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
       meta: { reason: 'unknown_email' },
     });
     return res.status(401).json({ error: 'Invalid email or password.' });
@@ -294,13 +323,11 @@ async function handleLogin(req, res, expectedRole) {
 
   const match = await bcrypt.compare(password, user.password);
   if (!match) {
-    await logActivity({
+    await logAuthEvent(req, {
       email: user.email,
       userId: user._id,
-      action: 'login_failed',
+      action: ACTIONS.LOGIN_FAILED,
       role: user.role || ROLES.USER,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
       meta: { reason: 'bad_password' },
     });
     return res.status(401).json({ error: 'Invalid email or password.' });
@@ -308,6 +335,13 @@ async function handleLogin(req, res, expectedRole) {
 
   const userRole = user.role || ROLES.USER;
   if (userRole !== expectedRole) {
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.LOGIN_WRONG_PORTAL,
+      role: userRole,
+      meta: { expectedPortal: expectedRole, actualRole: userRole },
+    });
     const redirect = expectedRole === ROLES.ADMIN ? '/login.html' : '/admin-login.html';
     const msg = expectedRole === ROLES.ADMIN
       ? 'This account is not an admin. Use user login.'
@@ -316,13 +350,11 @@ async function handleLogin(req, res, expectedRole) {
   }
 
   if (user.isDisabled) {
-    await logActivity({
+    await logAuthEvent(req, {
       email: user.email,
       userId: user._id,
-      action: 'login_blocked',
+      action: ACTIONS.LOGIN_BLOCKED,
       role: userRole,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
       meta: { reason: 'disabled' },
     });
     return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
@@ -348,13 +380,12 @@ async function handleLogin(req, res, expectedRole) {
   const mfaToken = signMfaPendingToken(user._id, expectedRole);
   setMfaPendingCookie(res, mfaToken);
 
-  await logActivity({
+  await logAuthEvent(req, {
     email: user.email,
     userId: user._id,
-    action: 'login_password_ok',
+    action: ACTIONS.LOGIN_PASSWORD_OK,
     role: userRole,
-    ip: req.ip,
-    userAgent: req.get('user-agent'),
+    meta: { portal: expectedRole },
   });
 
   const mfaPage = expectedRole === ROLES.ADMIN ? '/admin-mfa.html' : '/mfa.html';
@@ -387,7 +418,23 @@ router.post('/admin/login', async (req, res) => {
   }
 });
 
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
+  const token = req.cookies?.token;
+  if (token) {
+    try {
+      const payload = jwt.verify(token, config.jwtSecret);
+      if (payload.type === 'auth') {
+        await logAuthEvent(req, {
+          email: payload.email,
+          userId: payload.sub,
+          action: ACTIONS.LOGOUT,
+          role: payload.role || ROLES.USER,
+        });
+      }
+    } catch {
+      /* expired/invalid token — still clear cookies */
+    }
+  }
   res.clearCookie('token');
   res.clearCookie('mfa_token');
   res.clearCookie('verify_email_token');
@@ -420,11 +467,24 @@ router.post('/change-password', async (req, res) => {
 
     const validCurrent = await bcrypt.compare(currentPassword, user.password);
     if (!validCurrent) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.CHANGE_PASSWORD_FAILED,
+        role: user.role || ROLES.USER,
+        meta: { reason: 'wrong_current_password' },
+      });
       return res.status(401).json({ error: 'Current password is incorrect.' });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
     await updateUser(user, { password: hashedPassword });
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.CHANGE_PASSWORD_SUCCESS,
+      role: user.role || ROLES.USER,
+    });
     res.json({ message: 'Password updated successfully.' });
   } catch (err) {
     respondWithError(res, err, 'Could not change password.');
@@ -443,31 +503,38 @@ router.post('/forgot-password', async (req, res) => {
     }
 
     const user = await findByEmail(email);
-    if (!user) {
-      return res.json({
-        message: 'If that email is registered, a password reset code has been sent.',
+    if (user) {
+      const otp = generateEmailOtp();
+      const otpHash = await hashEmailOtp(otp);
+      await updateUser(user, {
+        resetOtpHash: otpHash,
+        resetOtpExpiresAt: getEmailOtpExpiry(),
       });
+
+      const mailResult = await sendEmailOtp(user.email, otp, user.fullName, {
+        subject: 'Password reset code',
+        heading: 'Reset your password',
+        intro: 'Use this code to reset your password:',
+      });
+
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.FORGOT_PASSWORD,
+        role: user.role || ROLES.USER,
+      });
+
+      const response = {
+        message: 'If that email is registered, a password reset code has been sent.',
+        redirect: '/reset-password.html',
+      };
+      if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+      return res.json(response);
     }
 
-    const otp = generateEmailOtp();
-    const otpHash = await hashEmailOtp(otp);
-    await updateUser(user, {
-      resetOtpHash: otpHash,
-      resetOtpExpiresAt: getEmailOtpExpiry(),
-    });
-
-    const mailResult = await sendEmailOtp(user.email, otp, user.fullName, {
-      subject: 'Password reset code',
-      heading: 'Reset your password',
-      intro: 'Use this code to reset your password:',
-    });
-
-    const response = {
+    return res.json({
       message: 'If that email is registered, a password reset code has been sent.',
-      redirect: '/reset-password.html',
-    };
-    if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
-    res.json(response);
+    });
   } catch (err) {
     respondWithError(res, err, 'Could not start password reset.');
   }
@@ -501,6 +568,13 @@ router.post('/reset-password', async (req, res) => {
 
     const valid = await verifyEmailOtp(code, user.resetOtpHash);
     if (!valid) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.RESET_PASSWORD_FAILED,
+        role: user.role || ROLES.USER,
+        meta: { reason: 'invalid_code' },
+      });
       return res.status(401).json({ error: 'Invalid reset code.' });
     }
 
@@ -509,6 +583,13 @@ router.post('/reset-password', async (req, res) => {
       password: hashedPassword,
       resetOtpHash: null,
       resetOtpExpiresAt: null,
+    });
+
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.RESET_PASSWORD_SUCCESS,
+      role: user.role || ROLES.USER,
     });
 
     res.clearCookie('mfa_token');

@@ -271,6 +271,8 @@ button:disabled {
 .badge-disabled { background: #f8d7da; color: #721c24; }
 .badge-admin { background: #d1ecf1; color: #0c5460; }
 .badge-user { background: #e9ecef; color: #495057; }
+.badge-activity { background: #e8eaf6; color: #283593; font-size: 0.85em; }
+.meta-cell { font-size: 0.85em; color: #555; max-width: 220px; word-break: break-word; }
 
 .btn-sm {
   padding: 6px 10px;

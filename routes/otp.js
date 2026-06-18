@@ -5,7 +5,7 @@ const { respondWithError } = require('../middleware/errorHandler');
 const { findById, updateUser } = require('../models/User');
 const { verifyTotpCode, isValidTotpToken, generateTotpSetup, qrFromSecret } = require('../utils/totp');
 const authRouter = require('./auth');
-const { logActivity } = require('../models/AuthActivity');
+const { ACTIONS, logAuthEvent } = require('../utils/activityLogger');
 
 const router = express.Router();
 
@@ -89,11 +89,25 @@ router.post('/enable-setup', async (req, res) => {
 
     const valid = verifyTotpCode(user.totpSecret, code);
     if (!valid) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.MFA_SETUP_FAILED,
+        role: user.role || authRouter.ROLES.USER,
+        meta: { step: 'enable_setup' },
+      });
       return res.status(401).json({ error: 'Invalid code. Check Google Authenticator.' });
     }
 
     await updateUser(user, { mfaEnabled: true });
     res.clearCookie('setup_mfa_token');
+
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.MFA_SETUP_SUCCESS,
+      role: user.role || authRouter.ROLES.USER,
+    });
 
     res.json({
       message: 'Google Authenticator enabled! You can log in now.',
@@ -143,10 +157,23 @@ router.post('/enable', requireAuth, async (req, res) => {
 
     const valid = verifyTotpCode(user.totpSecret, code);
     if (!valid) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.MFA_SETUP_FAILED,
+        role: req.user.role || authRouter.ROLES.USER,
+        meta: { step: 'dashboard_enable' },
+      });
       return res.status(401).json({ error: 'Invalid code. Check Google Authenticator.' });
     }
 
     await updateUser(user, { mfaEnabled: true });
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.MFA_ENABLED,
+      role: user.role || authRouter.ROLES.USER,
+    });
     res.json({ message: 'Google Authenticator MFA enabled successfully.' });
   } catch (err) {
     respondWithError(res, err, 'Could not enable MFA.');
@@ -182,13 +209,12 @@ router.post('/verify', async (req, res) => {
 
     const valid = verifyTotpCode(user.totpSecret, token);
     if (!valid) {
-      await logActivity({
+      await logAuthEvent(req, {
         email: user.email,
         userId: user._id,
-        action: 'mfa_failed',
+        action: ACTIONS.MFA_FAILED,
         role: userRole,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
+        meta: { portal: session.portal },
       });
       return res.status(401).json({ error: 'Invalid authenticator code.' });
     }
@@ -197,13 +223,12 @@ router.post('/verify', async (req, res) => {
     authRouter.setAuthCookie(res, authToken);
     res.clearCookie('mfa_token');
 
-    await logActivity({
+    await logAuthEvent(req, {
       email: user.email,
       userId: user._id,
-      action: 'mfa_success',
+      action: ACTIONS.LOGIN_SUCCESS,
       role: userRole,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
+      meta: { portal: session.portal },
     });
 
     const redirect = session.portal === authRouter.ROLES.ADMIN

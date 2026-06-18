@@ -506,6 +506,48 @@ const App = (function () {
     });
   }
 
+  const ACTION_LABELS = {
+    signup: 'Sign up',
+    signup_failed: 'Sign up failed',
+    verify_email_success: 'Email verified',
+    verify_email_failed: 'Email verify failed',
+    resend_email_otp: 'Resend email OTP',
+    mfa_setup_success: 'MFA setup complete',
+    mfa_setup_failed: 'MFA setup failed',
+    mfa_enabled: 'MFA enabled',
+    login_failed: 'Login failed',
+    login_wrong_portal: 'Wrong login portal',
+    login_blocked: 'Login blocked',
+    login_password_ok: 'Login (password OK)',
+    mfa_failed: 'MFA failed',
+    mfa_success: 'Login (MFA OK)',
+    login_success: 'Logged in',
+    logout: 'Logout',
+    change_password_success: 'Password changed',
+    change_password_failed: 'Password change failed',
+    forgot_password: 'Forgot password',
+    reset_password_success: 'Password reset',
+    reset_password_failed: 'Password reset failed',
+    account_disabled: 'Account disabled',
+    account_enabled: 'Account enabled',
+  };
+
+  function formatActionLabel(action) {
+    return ACTION_LABELS[action] || action || '—';
+  }
+
+  function formatActivityMeta(meta) {
+    if (!meta || typeof meta !== 'object') return '—';
+    const parts = [];
+    if (meta.reason) parts.push(`reason: ${meta.reason}`);
+    if (meta.portal) parts.push(`portal: ${meta.portal}`);
+    if (meta.byAdmin) parts.push(`by: ${meta.byAdmin}`);
+    if (meta.targetEmail) parts.push(`target: ${meta.targetEmail}`);
+    if (meta.step) parts.push(`step: ${meta.step}`);
+    if (meta.expectedPortal) parts.push(`expected: ${meta.expectedPortal}`);
+    return parts.length ? parts.join(', ') : '—';
+  }
+
   function formatDate(iso) {
     if (!iso) return '—';
     return new Date(iso).toLocaleString();
@@ -574,20 +616,22 @@ const App = (function () {
     async function loadAdminActivity() {
       const tbody = document.getElementById('activityTableBody');
       try {
-        const data = await api('/api/admin/activity');
+        const data = await api('/api/admin/activity?limit=100');
         const rows = data.activity || [];
         if (!rows.length) {
-          tbody.innerHTML = '<tr><td colspan="4">No activity yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6">No activity yet.</td></tr>';
           return;
         }
         tbody.innerHTML = rows.map((a) => `<tr>
           <td>${formatDate(a.createdAt)}</td>
           <td>${a.email || '—'}</td>
-          <td>${a.action}</td>
+          <td><span class="badge badge-activity">${formatActionLabel(a.action)}</span></td>
           <td>${a.role || '—'}</td>
+          <td>${a.ip || '—'}</td>
+          <td class="meta-cell">${formatActivityMeta(a.meta)}</td>
         </tr>`).join('');
       } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="4">${err.message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6">${err.message}</td></tr>`;
       }
     }
 
