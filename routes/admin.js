@@ -2,7 +2,8 @@ const express = require('express');
 const { respondWithError } = require('../middleware/errorHandler');
 const { authenticate, requireRole, requireActiveAccount } = require('../middleware/roleAuth');
 const { listUsers, findById, updateUser } = require('../models/User');
-const { listActivities, logActivity } = require('../models/AuthActivity');
+const { listActivities } = require('../models/AuthActivity');
+const { ACTIONS, logAuthEvent } = require('../utils/activityLogger');
 
 const router = express.Router();
 
@@ -31,14 +32,12 @@ router.post('/users/:id/disable', async (req, res) => {
     }
 
     await updateUser(target, { isDisabled: true });
-    await logActivity({
+    await logAuthEvent(req, {
       email: target.email,
       userId: target._id,
-      action: 'account_disabled',
+      action: ACTIONS.ACCOUNT_DISABLED,
       role: 'admin',
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      meta: { byAdmin: req.user.email },
+      meta: { byAdmin: req.user.email, targetEmail: target.email },
     });
 
     res.json({ message: `Account ${target.email} has been disabled.` });
@@ -54,14 +53,12 @@ router.post('/users/:id/enable', async (req, res) => {
     if (!target) return res.status(404).json({ error: 'User not found.' });
 
     await updateUser(target, { isDisabled: false });
-    await logActivity({
+    await logAuthEvent(req, {
       email: target.email,
       userId: target._id,
-      action: 'account_enabled',
+      action: ACTIONS.ACCOUNT_ENABLED,
       role: 'admin',
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      meta: { byAdmin: req.user.email },
+      meta: { byAdmin: req.user.email, targetEmail: target.email },
     });
 
     res.json({ message: `Account ${target.email} has been enabled.` });
@@ -73,7 +70,7 @@ router.post('/users/:id/enable', async (req, res) => {
 /** GET /api/admin/activity */
 router.get('/activity', async (req, res) => {
   try {
-    const limit = Number(req.query.limit) || 50;
+    const limit = Number(req.query.limit) || 100;
     const activity = await listActivities({ limit });
     res.json({ activity });
   } catch (err) {
