@@ -1,48 +1,13 @@
-const mongoose = require('mongoose');
 const { encryptField, decryptField } = require('../utils/fieldCrypto');
-const { config, isLocalMongoUri } = require('../config/env');
-
-/**
- * User schema
- * - isEmailVerified: account activated after email OTP
- * - mfaEnabled: Google Authenticator confirmed
- * - totpSecret: encrypted TOTP secret (select: false)
- * - emailOtpHash / emailOtpExpiresAt: registration email OTP (select: false)
- * - resetOtpHash / resetOtpExpiresAt: forgot-password OTP (select: false)
- * - role: user | admin
- * - isDisabled: admin can disable user accounts
- */
-const userSchema = new mongoose.Schema(
-  {
-    fullName: { type: String, required: true, trim: true, maxlength: 100 },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true, maxlength: 254 },
-    password: { type: String, required: true },
-    role: { type: String, enum: ['user', 'admin'], default: 'user' },
-    isDisabled: { type: Boolean, default: false },
-    isEmailVerified: { type: Boolean, default: false },
-    mfaEnabled: { type: Boolean, default: false },
-    totpSecret: { type: String, default: null, select: false },
-    emailOtpHash: { type: String, default: null, select: false },
-    emailOtpExpiresAt: { type: Date, default: null, select: false },
-    resetOtpHash: { type: String, default: null, select: false },
-    resetOtpExpiresAt: { type: Date, default: null, select: false },
-  },
-  { timestamps: true }
-);
-
-const UserModel = mongoose.models.User || mongoose.model('User', userSchema);
+const db = require('../db/client');
 
 const memoryUsers = new Map();
-let useMemory = false;
-let dbConnected = false;
 
-function setMemoryMode(enabled) {
-  useMemory = enabled;
-  if (enabled) console.warn('[DB] Using in-memory user store (data lost on restart).');
-}
-
-function isMemoryMode() { return useMemory; }
-function isDbConnected() { return dbConnected && mongoose.connection.readyState === 1; }
+const USER_COLUMNS = `
+  id, full_name, email, password, role, is_disabled, is_email_verified, mfa_enabled,
+  totp_secret, email_otp_hash, email_otp_expires_at, reset_otp_hash, reset_otp_expires_at,
+  created_at, updated_at
+`;
 
 function decryptUserSecrets(user) {
   if (!user) return user;
@@ -55,51 +20,88 @@ function prepareTotpForStorage(secret) {
   return encryptField(secret);
 }
 
-function buildSelectFlags({ includeTotpSecret = false, includeEmailOtp = false, includeResetOtp = false } = {}) {
-  const fields = [];
-  if (includeTotpSecret) fields.push('+totpSecret');
-  if (includeEmailOtp) fields.push('+emailOtpHash', '+emailOtpExpiresAt');
-  if (includeResetOtp) fields.push('+resetOtpHash', '+resetOtpExpiresAt');
-  return fields;
+function rowToUser(row) {
+  if (!row) return null;
+  return {
+    _id: row.id,
+    fullName: row.full_name,
+    email: row.email,
+    password: row.password,
+    role: row.role || 'user',
+    isDisabled: row.is_disabled,
+    isEmailVerified: row.is_email_verified,
+    mfaEnabled: row.mfa_enabled,
+    totpSecret: row.totp_secret,
+    emailOtpHash: row.email_otp_hash,
+    emailOtpExpiresAt: row.email_otp_expires_at,
+    resetOtpHash: row.reset_otp_hash,
+    resetOtpExpiresAt: row.reset_otp_expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
-function applySelect(query, flags) {
-  const fields = buildSelectFlags(flags);
-  fields.forEach((f) => query.select(f));
-  return query;
+function stripSecrets(user, flags = {}) {
+  if (!user) return user;
+  const copy = { ...user };
+  if (!flags.includeTotpSecret) delete copy.totpSecret;
+  if (!flags.includeEmailOtp) {
+    delete copy.emailOtpHash;
+    delete copy.emailOtpExpiresAt;
+  }
+  if (!flags.includeResetOtp) {
+    delete copy.resetOtpHash;
+    delete copy.resetOtpExpiresAt;
+  }
+  return copy;
 }
 
 async function findByEmail(email, flags = {}) {
   const normalized = email.toLowerCase().trim();
-  if (useMemory) {
+
+  if (db.isMemoryMode()) {
     const user = memoryUsers.get(normalized) || null;
     const needsSecrets = flags.includeTotpSecret || flags.includeEmailOtp || flags.includeResetOtp;
-    return needsSecrets ? decryptUserSecrets(user) : user;
+    return needsSecrets ? decryptUserSecrets(user) : stripSecrets(user, flags);
   }
-  const user = await applySelect(UserModel.findOne({ email: normalized }), flags);
-  return flags.includeTotpSecret ? decryptUserSecrets(user) : user;
+
+  const { rows } = await db.query(
+    `SELECT ${USER_COLUMNS} FROM users WHERE email = $1 LIMIT 1`,
+    [normalized]
+  );
+  const user = rowToUser(rows[0]);
+  if (!user) return null;
+  if (flags.includeTotpSecret) return decryptUserSecrets(user);
+  return stripSecrets(user, flags);
 }
 
 async function findById(id, flags = {}) {
-  if (useMemory) {
+  if (db.isMemoryMode()) {
     for (const user of memoryUsers.values()) {
       if (String(user._id) === String(id)) {
         const needsSecrets = flags.includeTotpSecret || flags.includeEmailOtp || flags.includeResetOtp;
-        return needsSecrets ? decryptUserSecrets(user) : user;
+        return needsSecrets ? decryptUserSecrets(user) : stripSecrets(user, flags);
       }
     }
     return null;
   }
-  const user = await applySelect(UserModel.findById(id), flags);
-  return flags.includeTotpSecret ? decryptUserSecrets(user) : user;
+
+  const { rows } = await db.query(
+    `SELECT ${USER_COLUMNS} FROM users WHERE id = $1 LIMIT 1`,
+    [id]
+  );
+  const user = rowToUser(rows[0]);
+  if (!user) return null;
+  if (flags.includeTotpSecret) return decryptUserSecrets(user);
+  return stripSecrets(user, flags);
 }
 
 async function createUser(data) {
   const payload = { ...data };
   if (payload.totpSecret) payload.totpSecret = prepareTotpForStorage(payload.totpSecret);
+  const email = payload.email.toLowerCase().trim();
 
-  if (useMemory) {
-    const email = payload.email.toLowerCase().trim();
+  if (db.isMemoryMode()) {
     if (memoryUsers.has(email)) {
       const err = new Error('Email already registered');
       err.code = 11000;
@@ -121,18 +123,42 @@ async function createUser(data) {
       resetOtpExpiresAt: payload.resetOtpExpiresAt ?? null,
       createdAt: new Date(),
       updatedAt: new Date(),
-      async save() {
-        this.updatedAt = new Date();
-        memoryUsers.set(this.email, { ...this, save: this.save });
-        return this;
-      },
     };
     memoryUsers.set(email, user);
     return user;
   }
-  const user = new UserModel(payload);
-  await user.save();
-  return user;
+
+  try {
+    const { rows } = await db.query(
+      `INSERT INTO users (
+        full_name, email, password, role, is_disabled, is_email_verified, mfa_enabled,
+        totp_secret, email_otp_hash, email_otp_expires_at, reset_otp_hash, reset_otp_expires_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      RETURNING ${USER_COLUMNS}`,
+      [
+        payload.fullName,
+        email,
+        payload.password,
+        payload.role ?? 'user',
+        payload.isDisabled ?? false,
+        payload.isEmailVerified ?? false,
+        payload.mfaEnabled ?? false,
+        payload.totpSecret ?? null,
+        payload.emailOtpHash ?? null,
+        payload.emailOtpExpiresAt ?? null,
+        payload.resetOtpHash ?? null,
+        payload.resetOtpExpiresAt ?? null,
+      ]
+    );
+    return rowToUser(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') {
+      const dup = new Error('Email already registered');
+      dup.code = 11000;
+      throw dup;
+    }
+    throw err;
+  }
 }
 
 async function updateUser(user, updates) {
@@ -142,12 +168,46 @@ async function updateUser(user, updates) {
   }
   Object.assign(user, payload);
   user.updatedAt = new Date();
-  if (useMemory) {
+
+  if (db.isMemoryMode()) {
     memoryUsers.set(user.email, user);
     return decryptUserSecrets(user);
   }
-  await user.save();
-  return user;
+
+  const { rows } = await db.query(
+    `UPDATE users SET
+      full_name = $1,
+      email = $2,
+      password = $3,
+      role = $4,
+      is_disabled = $5,
+      is_email_verified = $6,
+      mfa_enabled = $7,
+      totp_secret = $8,
+      email_otp_hash = $9,
+      email_otp_expires_at = $10,
+      reset_otp_hash = $11,
+      reset_otp_expires_at = $12,
+      updated_at = NOW()
+    WHERE id = $13
+    RETURNING ${USER_COLUMNS}`,
+    [
+      user.fullName,
+      user.email,
+      user.password,
+      user.role || 'user',
+      Boolean(user.isDisabled),
+      Boolean(user.isEmailVerified),
+      Boolean(user.mfaEnabled),
+      user.totpSecret ?? null,
+      user.emailOtpHash ?? null,
+      user.emailOtpExpiresAt ?? null,
+      user.resetOtpHash ?? null,
+      user.resetOtpExpiresAt ?? null,
+      user._id,
+    ]
+  );
+  return decryptUserSecrets(rowToUser(rows[0]));
 }
 
 function sanitizeUser(user) {
@@ -166,77 +226,23 @@ function sanitizeUser(user) {
 }
 
 async function listUsers() {
-  if (useMemory) {
+  if (db.isMemoryMode()) {
     return Array.from(memoryUsers.values()).map(sanitizeUser);
   }
-  const users = await UserModel.find()
-    .select('-password -totpSecret -emailOtpHash -emailOtpExpiresAt -resetOtpHash -resetOtpExpiresAt')
-    .sort({ createdAt: -1 })
-    .lean();
-  return users.map((u) => sanitizeUser(u));
-}
 
-let connectPromise = null;
-
-async function connectDB(uri = config.mongodbUri) {
-  if (isLocalMongoUri(uri)) {
-    if (config.isProduction && config.isVercel) {
-      console.error('[DB] MONGODB_URI not set on Vercel — using in-memory store.');
-    }
-    setMemoryMode(true);
-    dbConnected = false;
-    const { ensureDefaultAdmin } = require('../utils/seedAdmin');
-    await ensureDefaultAdmin();
-    return false;
-  }
-  if (mongoose.connection.readyState === 1) {
-    setMemoryMode(false);
-    dbConnected = true;
-    return true;
-  }
-  if (connectPromise) return connectPromise;
-
-  const options = {
-    serverSelectionTimeoutMS: 8000,
-    ...(uri.startsWith('mongodb+srv') && { tls: true, retryWrites: true, w: 'majority' }),
-  };
-
-  connectPromise = mongoose.connect(uri, options)
-    .then(async () => {
-      console.log('[DB] Connected to MongoDB (TLS in transit)');
-      setMemoryMode(false);
-      dbConnected = true;
-      const { ensureDefaultAdmin } = require('../utils/seedAdmin');
-      await ensureDefaultAdmin();
-      return true;
-    })
-    .catch((err) => {
-      console.warn('[DB] MongoDB unavailable:', err.message);
-      setMemoryMode(true);
-      dbConnected = false;
-      connectPromise = null;
-      return false;
-    });
-
-  return connectPromise;
-}
-
-function getDbStatus() {
-  return {
-    mode: useMemory ? 'memory' : 'mongodb',
-    connected: isDbConnected(),
-    encryptionAtRest: useMemory ? false : 'mongodb-atlas-default',
-    fieldEncryption: require('../utils/fieldCrypto').isEncryptionConfigured(),
-  };
+  const { rows } = await db.query(
+    `SELECT id, full_name, email, role, is_disabled, is_email_verified, mfa_enabled, created_at, updated_at
+     FROM users ORDER BY created_at DESC`
+  );
+  return rows.map((row) => sanitizeUser(rowToUser(row)));
 }
 
 module.exports = {
-  UserModel,
-  connectDB,
-  setMemoryMode,
-  isMemoryMode,
-  isDbConnected,
-  getDbStatus,
+  connectDB: db.connectDB,
+  setMemoryMode: db.setMemoryMode,
+  isMemoryMode: db.isMemoryMode,
+  isDbConnected: db.isDbConnected,
+  getDbStatus: db.getDbStatus,
   findByEmail,
   findById,
   createUser,

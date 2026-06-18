@@ -16,24 +16,25 @@ const config = {
   jwtMfaSecret: process.env.JWT_MFA_SECRET || '',
   cookieMaxAgeMs: Number(process.env.COOKIE_MAX_AGE_MS) || 86400000,
 
-  mongodbUri: (process.env.MONGODB_URI || '').trim(),
+  postgresUrl: (
+    process.env.POSTGRES_URL
+    || process.env.POSTGRES_URL_NON_POOLING
+    || process.env.DATABASE_URL
+    || ''
+  ).trim(),
   dbEncryptionKey: (process.env.DB_ENCRYPTION_KEY || '').trim(),
 
   totpAppName: (process.env.TOTP_APP_NAME || 'MFA Auth').trim(),
   corsOrigin: (process.env.CORS_ORIGIN || '').trim(),
 };
 
-function isLocalMongoUri(uri) {
-  return !uri || uri.includes('127.0.0.1') || uri.includes('localhost');
-}
-
-function isAtlasUri(uri) {
-  return uri.startsWith('mongodb+srv://') || uri.startsWith('mongodb://');
+function isPostgresConfigured() {
+  return Boolean(config.postgresUrl);
 }
 
 /**
  * Validate required environment variables.
- * Production/Vercel enforces stricter rules (Atlas + encryption key).
+ * Production/Vercel enforces stricter rules (Neon Postgres + encryption key).
  */
 function validateEnv({ exitOnError = false } = {}) {
   const errors = [];
@@ -55,25 +56,21 @@ function validateEnv({ exitOnError = false } = {}) {
       warnings.push('DB_ENCRYPTION_KEY should be a 64-character hex string (32 bytes).');
     }
 
-    if (isLocalMongoUri(config.mongodbUri)) {
+    if (!isPostgresConfigured()) {
       if (isVercel) {
         warnings.push(
-          'MONGODB_URI not set on Vercel — using in-memory store (data resets between invocations). Add Atlas URI for persistence.'
+          'POSTGRES_URL not set on Vercel — using in-memory store (data resets between invocations). Connect Neon Postgres for persistence.'
         );
       } else {
-        errors.push(
-          'MONGODB_URI must be a MongoDB Atlas connection string in production (mongodb+srv://...).'
-        );
+        errors.push('POSTGRES_URL must be set in production (Neon PostgreSQL connection string).');
       }
-    } else if (!isAtlasUri(config.mongodbUri)) {
-      errors.push('MONGODB_URI format is invalid.');
     }
   } else {
-    if (isLocalMongoUri(config.mongodbUri)) {
-      warnings.push('MONGODB_URI not set — using in-memory database (dev only).');
+    if (!isPostgresConfigured()) {
+      warnings.push('POSTGRES_URL not set — using in-memory database (dev only).');
     }
     if (!config.dbEncryptionKey) {
-      warnings.push('DB_ENCRYPTION_KEY not set — mfaSecret stored without field encryption (dev only).');
+      warnings.push('DB_ENCRYPTION_KEY not set — totpSecret stored without field encryption (dev only).');
     }
   }
 
@@ -93,6 +90,5 @@ function validateEnv({ exitOnError = false } = {}) {
 module.exports = {
   config,
   validateEnv,
-  isLocalMongoUri,
-  isAtlasUri,
+  isPostgresConfigured,
 };
