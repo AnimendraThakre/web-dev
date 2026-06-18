@@ -48,8 +48,12 @@ function removeIfExists(key) {
 }
 
 for (const [key, value] of Object.entries(vars)) {
-  if (key === 'MONGODB_URI' && (!value || value.includes('127.0.0.1') || value.includes('localhost'))) {
-    console.log(`Skip ${key} (local URI — add MongoDB Atlas URI in Vercel dashboard)`);
+  if (key === 'MONGODB_URI') {
+    console.log(`Skip ${key} (legacy — app uses POSTGRES_URL)`);
+    continue;
+  }
+  if (key === 'POSTGRES_URL' && !value) {
+    console.log(`Skip ${key} (add Neon Postgres in Vercel Storage or set manually)`);
     continue;
   }
   if (!value && key !== 'SMTP_SECURE') {

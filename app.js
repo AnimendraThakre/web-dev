@@ -31,19 +31,31 @@ let dbReady = false;
 
 async function ensureDb() {
   if (!dbReady) {
-    await connectDB(config.mongodbUri);
+    await connectDB();
     dbReady = true;
   }
 }
 
-// Health check — no auth required
+// Health check — no auth required (connects DB so status is accurate)
 app.get('/api/health', (req, res) => {
-  res.json({
-    ok: envCheck.valid,
-    mfa: 'totp',
-    database: getDbStatus(),
-    environment: config.nodeEnv,
-  });
+  ensureDb()
+    .then(() => {
+      res.json({
+        ok: envCheck.valid,
+        mfa: 'totp',
+        database: getDbStatus(),
+        environment: config.nodeEnv,
+      });
+    })
+    .catch(() => {
+      res.status(503).json({
+        ok: false,
+        mfa: 'totp',
+        database: getDbStatus(),
+        environment: config.nodeEnv,
+        error: 'Database unavailable.',
+      });
+    });
 });
 
 // Block API if env validation failed (production safety)

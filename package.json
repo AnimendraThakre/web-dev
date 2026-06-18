@@ -14,7 +14,8 @@
     "totp",
     "authentication",
     "express",
-    "mongodb"
+    "postgresql",
+    "neon"
   ],
   "license": "MIT",
   "dependencies": {
@@ -25,8 +26,8 @@
     "express": "^4.21.2",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.9.3",
     "nodemailer": "^6.10.1",
+    "pg": "^8.21.0",
     "qrcode": "^1.5.4",
     "speakeasy": "^2.0.0"
   }
