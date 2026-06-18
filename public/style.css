@@ -31,6 +31,90 @@ body {
   max-width: 520px;
 }
 
+/* Full-width layout for dashboard pages on desktop */
+body.page-dashboard {
+  display: block;
+  padding: clamp(16px, 2.5vw, 40px);
+  min-height: 100vh;
+}
+
+body.page-dashboard .dashboard-container {
+  max-width: min(1200px, 100%);
+  margin: 0 auto;
+  width: 100%;
+}
+
+body.page-admin .dashboard-container {
+  max-width: min(1400px, 100%);
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.dashboard-header-text h1,
+.dashboard-header-text .subtitle {
+  text-align: left;
+}
+
+.dashboard-header .subtitle {
+  margin-bottom: 0;
+}
+
+.dashboard-header .btn-danger {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.admin-info-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 40px;
+}
+
+.admin-info-bar p {
+  margin: 4px 0;
+}
+
+.admin-panels {
+  display: grid;
+  gap: 20px;
+}
+
+@media (min-width: 1100px) {
+  .admin-panels {
+    grid-template-columns: 1fr 1.15fr;
+    align-items: start;
+  }
+}
+
+body.page-dashboard .section-title {
+  text-align: left;
+}
+
+body.page-dashboard .data-table {
+  font-size: 0.9rem;
+}
+
+body.page-dashboard .data-table th,
+body.page-dashboard .data-table td {
+  padding: 10px 12px;
+}
+
+body.page-dashboard .meta-cell {
+  max-width: none;
+}
+
+body.page-dashboard .table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 h1, h2 {
   text-align: center;
   color: #333;
@@ -207,6 +291,18 @@ button:disabled {
   .auth-container,
   .dashboard-container {
     padding: 22px;
+  }
+
+  body.page-dashboard {
+    padding: 16px;
+  }
+
+  .dashboard-header {
+    flex-direction: column;
+  }
+
+  .dashboard-header .btn-danger {
+    width: 100%;
   }
 }
 

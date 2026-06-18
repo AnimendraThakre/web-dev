@@ -6,62 +6,65 @@
   <title>Admin Dashboard</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-  <div class="dashboard-container admin-theme">
-    <h1>Admin Dashboard</h1>
-    <p class="subtitle" id="adminWelcome">Loading...</p>
+<body class="page-dashboard page-admin">
+  <div class="dashboard-container admin-theme admin-dashboard">
+    <header class="dashboard-header">
+      <div class="dashboard-header-text">
+        <h1>Admin Dashboard</h1>
+        <p class="subtitle" id="adminWelcome">Loading...</p>
+      </div>
+      <button type="button" class="btn-danger" id="adminLogoutBtn">Logout</button>
+    </header>
 
     <div id="message" class="message" role="alert"></div>
 
-    <div class="user-card">
+    <div class="user-card admin-info-bar">
       <p><strong>Admin:</strong> <span id="adminName">—</span></p>
       <p><strong>Email:</strong> <span id="adminEmail">—</span></p>
     </div>
 
-    <div class="user-card">
-      <h3 class="section-title">Users</h3>
-      <div class="table-wrap">
-        <table class="data-table" id="usersTable">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Status</th>
-              <th>MFA</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="usersTableBody">
-            <tr><td colspan="6">Loading users...</td></tr>
-          </tbody>
-        </table>
+    <div class="admin-panels">
+      <div class="user-card panel-users">
+        <h3 class="section-title">Users</h3>
+        <div class="table-wrap">
+          <table class="data-table" id="usersTable">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>MFA</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody">
+              <tr><td colspan="6">Loading users...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
 
-    <div class="user-card">
-      <h3 class="section-title">Authentication activity</h3>
-      <div class="table-wrap">
-        <table class="data-table" id="activityTable">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Email</th>
-              <th>Action</th>
-              <th>Role</th>
-              <th>IP</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody id="activityTableBody">
-            <tr><td colspan="6">Loading activity...</td></tr>
-          </tbody>
-        </table>
+      <div class="user-card panel-activity">
+        <h3 class="section-title">Authentication activity</h3>
+        <div class="table-wrap">
+          <table class="data-table" id="activityTable">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Email</th>
+                <th>Action</th>
+                <th>Role</th>
+                <th>IP</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="activityTableBody">
+              <tr><td colspan="6">Loading activity...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
-
-    <div class="button-group">
-      <button type="button" class="btn-danger" id="adminLogoutBtn">Logout</button>
     </div>
   </div>
 
