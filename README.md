@@ -29,3 +29,16 @@ day 1
  day 9
  obj - to deploy code from local host to live host and we should recieve otp in gmail 
  milestone achieved - could not deploy
+
+day 10 
+obj - to deploy using vercel to get totp in google auth using qr code
+milestone achieved - deployed using vercel
+
+day 11 
+obj- first otp sent to mail, next time onwards authenticator- milestone achieved
+
+day 12 
+obj- forgot password implement- milestone achieved
+
+day 13
+obj- backend deployment - milestone achieved 

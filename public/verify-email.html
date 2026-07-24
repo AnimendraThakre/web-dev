@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify Email</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="auth-container">
+    <div class="mfa-icon" aria-hidden="true">✉️</div>
+    <h2>Verify your email</h2>
+    <p class="subtitle">Enter the 6-digit code sent to your email</p>
+
+    <div id="message" class="message" role="alert"></div>
+    <p class="timer" id="timer">Code expires in 5:00</p>
+
+    <form id="verifyEmailForm" novalidate>
+      <label for="emailOtp">Verification code</label>
+      <input type="text" id="emailOtp" class="otp-input" placeholder="000000"
+        inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+
+      <div class="button-group">
+        <button type="submit" class="btn-login" id="verifyEmailBtn">Verify Email</button>
+        <button type="button" class="btn-secondary" id="resendEmailBtn">Resend code</button>
+        <a href="/login.html" class="btn btn-link">Back to login</a>
+      </div>
+    </form>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>App.initVerifyEmailPage();</script>
+</body>
+</html>

@@ -31,6 +31,113 @@ body {
   max-width: 520px;
 }
 
+/* Full-width layout for dashboard pages on desktop */
+body.page-dashboard {
+  display: block;
+  padding: clamp(16px, 2.5vw, 40px);
+  min-height: 100vh;
+}
+
+body.page-dashboard .dashboard-container {
+  max-width: min(1200px, 100%);
+  margin: 0 auto;
+  width: 100%;
+}
+
+body.page-admin .dashboard-container {
+  max-width: min(1400px, 100%);
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.dashboard-header-text h1,
+.dashboard-header-text .subtitle {
+  text-align: left;
+}
+
+.dashboard-header .subtitle {
+  margin-bottom: 0;
+}
+
+.dashboard-header .btn-danger {
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.admin-info-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 40px;
+}
+
+.admin-info-bar p {
+  margin: 4px 0;
+}
+
+.admin-panels {
+  display: grid;
+  gap: 20px;
+}
+
+@media (min-width: 1100px) {
+  .admin-panels {
+    grid-template-columns: 1fr 1.15fr;
+    align-items: start;
+  }
+}
+
+/* Activity log scrolls independently — page stays fixed */
+.panel-activity .table-wrap {
+  max-height: min(65vh, 520px);
+  overflow-y: auto;
+  overflow-x: auto;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+}
+
+.panel-activity .data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f1f3f5;
+  box-shadow: 0 1px 0 #e9ecef;
+}
+
+@media (max-width: 1099px) {
+  .panel-activity .table-wrap {
+    max-height: 400px;
+  }
+}
+
+body.page-dashboard .section-title {
+  text-align: left;
+}
+
+body.page-dashboard .data-table {
+  font-size: 0.9rem;
+}
+
+body.page-dashboard .data-table th,
+body.page-dashboard .data-table td {
+  padding: 10px 12px;
+}
+
+body.page-dashboard .meta-cell {
+  max-width: none;
+}
+
+body.page-dashboard .table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 h1, h2 {
   text-align: center;
   color: #333;
@@ -190,9 +297,106 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.qr-wrap {
+  text-align: center;
+  margin: 16px 0;
+}
+
+.qr-wrap img {
+  max-width: 200px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
 @media (max-width: 480px) {
   .auth-container,
   .dashboard-container {
     padding: 22px;
   }
+
+  body.page-dashboard {
+    padding: 16px;
+  }
+
+  .dashboard-header {
+    flex-direction: column;
+  }
+
+  .dashboard-header .btn-danger {
+    width: 100%;
+  }
 }
+
+.admin-theme h1,
+.admin-theme h2 {
+  color: #1a3a5c;
+}
+
+.admin-theme .btn-login {
+  background-color: #1a3a5c;
+}
+
+.inline-link {
+  color: #007bff;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.inline-link:hover {
+  text-decoration: underline;
+}
+
+.section-title {
+  margin: 0 0 12px;
+  text-align: center;
+  font-size: 1rem;
+  color: #333;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e9ecef;
+  text-align: left;
+}
+
+.data-table th {
+  background: #f1f3f5;
+  font-weight: 600;
+  color: #555;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge-active { background: #d4edda; color: #155724; }
+.badge-disabled { background: #f8d7da; color: #721c24; }
+.badge-admin { background: #d1ecf1; color: #0c5460; }
+.badge-user { background: #e9ecef; color: #495057; }
+.badge-activity { background: #e8eaf6; color: #283593; font-size: 0.85em; }
+.meta-cell { font-size: 0.85em; color: #555; max-width: 220px; word-break: break-word; }
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+.btn-warn { background-color: #ffc107; color: #333; }
+.btn-ok { background-color: #28a745; color: white; }

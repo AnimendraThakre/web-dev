@@ -1,139 +1,96 @@
 const nodemailer = require('nodemailer');
-
-let transporter = null;
-let verified = false;
-
-/** Gmail app passwords are 16 chars; Google often displays them with spaces. */
-function normalizeSmtpPass(pass) {
-  return (pass || '').trim().replace(/\s+/g, '');
-}
-
-function getSmtpUser() {
-  return (process.env.SMTP_USER || '').trim();
-}
-
-function getSmtpPass() {
-  return normalizeSmtpPass(process.env.SMTP_PASS);
-}
+const { config } = require('../config/env');
 
 function isSmtpConfigured() {
-  const user = getSmtpUser();
-  const pass = getSmtpPass();
-  const service = (process.env.SMTP_SERVICE || '').trim();
+  const user = (process.env.SMTP_USER || '').trim();
+  const pass = normalizeSmtpPass(process.env.SMTP_PASS);
   const host = (process.env.SMTP_HOST || '').trim();
-  return Boolean(user && pass && (service || host));
+  return Boolean(user && pass && host);
 }
 
-function createTransporter() {
-  const user = getSmtpUser();
-  const pass = getSmtpPass();
-
-  // Explicit host/port is more reliable for Gmail than the "service" shorthand
-  const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
-  const port = Number(process.env.SMTP_PORT) || 587;
-  const secure = process.env.SMTP_SECURE === 'true';
-
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth: { user, pass },
-    tls: { minVersion: 'TLSv1.2' },
-  });
+function normalizeSmtpPass(pass) {
+  return (pass || '').trim().replace(/^["']|["']$/g, '').replace(/\s+/g, '');
 }
 
 function getTransporter() {
   if (!isSmtpConfigured()) return null;
-  if (!transporter) {
-    transporter = createTransporter();
-    verified = false;
-  }
-  return transporter;
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST.trim(),
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: process.env.SMTP_SECURE === 'true',
+    requireTLS: process.env.SMTP_SECURE !== 'true',
+    auth: {
+      user: process.env.SMTP_USER.trim(),
+      pass: normalizeSmtpPass(process.env.SMTP_PASS),
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+    tls: { minVersion: 'TLSv1.2' },
+  });
 }
 
-async function verifySmtpConnection() {
-  if (!isSmtpConfigured()) {
-    console.warn('[Mail] SMTP not configured — OTP will print in the server console (dev only).');
-    return false;
+function formatSmtpError(err) {
+  const code = err.code || err.responseCode;
+  if (code === 'EAUTH' || String(err.response || '').includes('535')) {
+    return 'SMTP authentication failed. Use a Gmail App Password (not your normal password).';
   }
-
-  try {
-    const transport = getTransporter();
-    await transport.verify();
-    verified = true;
-    console.log(`[Mail] SMTP ready — emails will be sent from ${process.env.EMAIL_FROM || process.env.SMTP_USER}`);
-    return true;
-  } catch (err) {
-    verified = false;
-    console.error('[Mail] SMTP connection failed:', err.message);
-    if (String(err.message).includes('535') || String(err.message).includes('BadCredentials')) {
-      console.error('[Mail] Gmail rejected the login. Fix:');
-      console.error('  1. Enable 2-Step Verification on your Google account');
-      console.error('  2. Create a new App Password: https://myaccount.google.com/apppasswords');
-      console.error('  3. Put the 16-character password in .env as SMTP_PASS (spaces are OK)');
-    }
-    return false;
+  if (code === 'ECONNECTION' || code === 'ETIMEDOUT') {
+    return 'Could not connect to SMTP server. Check SMTP_HOST and SMTP_PORT.';
   }
+  return err.message || 'Failed to send email.';
 }
 
-function buildOtpEmailContent(otp, fullName, isResend) {
-  const subject = isResend ? 'Your new verification code' : 'Your verification code';
+async function sendEmailOtp(to, otp, fullName, template = {}) {
+  const from = (process.env.EMAIL_FROM || process.env.SMTP_USER || '').trim().replace(/^["']|["']$/g, '');
   const greeting = fullName ? `Hello ${fullName}` : 'Hello';
+  const subject = template.subject || 'Verify your email address';
+  const heading = template.heading || 'Verify your email';
+  const intro = template.intro || 'Your verification code is:';
 
   const text = `${greeting},
 
-Your MFA verification code is: ${otp}
+${intro} ${otp}
 
 This code expires in 5 minutes.
 
-If you did not request this, you can safely ignore this email.`;
+If you did not create an account, ignore this email.`;
 
   const html = `
-    <div style="font-family:Segoe UI,Tahoma,sans-serif;max-width:480px;margin:0 auto;padding:24px">
-      <h2 style="color:#333;margin-top:0">Two-Factor Verification</h2>
+    <div style="font-family:Segoe UI,sans-serif;max-width:480px;padding:24px">
+      <h2>${heading}</h2>
       <p>${greeting},</p>
-      <p>Your verification code is:</p>
-      <p style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#007bff;margin:16px 0">${otp}</p>
-      <p style="color:#666">This code expires in <strong>5 minutes</strong>.</p>
-      <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
-      <p style="color:#999;font-size:12px">If you did not request this code, ignore this email.</p>
+      <p>${intro}</p>
+      <p style="font-size:28px;font-weight:bold;letter-spacing:6px;color:#007bff">${otp}</p>
+      <p style="color:#666">Expires in <strong>5 minutes</strong>.</p>
     </div>
   `;
 
-  return { subject, text, html };
-}
-
-function getEmailFrom() {
-  let from = (process.env.EMAIL_FROM || getSmtpUser()).trim();
-  if ((from.startsWith('"') && from.endsWith('"')) || (from.startsWith("'") && from.endsWith("'"))) {
-    from = from.slice(1, -1);
-  }
-  return from;
-}
-
-async function sendOtpEmail(to, otp, fullName, { isResend = false } = {}) {
-  const from = getEmailFrom();
-  const { subject, text, html } = buildOtpEmailContent(otp, fullName, isResend);
-
   if (!isSmtpConfigured()) {
-    console.log(`[DEV] OTP for ${to}: ${otp} (SMTP not configured)`);
-    return { sent: false, devOtp: process.env.NODE_ENV !== 'production' ? otp : undefined };
+    console.warn('[SMTP] Not configured — OTP logged to console instead of email.');
+    console.log(`[DEV] Email OTP for ${to}: ${otp}`);
+    return { sent: false, devOtp: config.isProduction ? undefined : otp };
   }
 
   const transport = getTransporter();
-
   try {
     await transport.sendMail({ from, to, subject, text, html });
-    console.log(`[Mail] OTP sent to ${to}`);
+    console.log(`[SMTP] Email sent to ${to}: ${subject}`);
     return { sent: true };
   } catch (err) {
-    console.error(`[Mail] Failed to send OTP to ${to}:`, err.message);
-    throw new Error('Could not send verification email. Check SMTP settings and try again.');
+    console.error('[SMTP] Send failed:', err.message);
+    const smtpError = new Error(formatSmtpError(err));
+    smtpError.cause = err;
+    throw smtpError;
   }
 }
 
-module.exports = {
-  isSmtpConfigured,
-  verifySmtpConnection,
-  sendOtpEmail,
-};
+function logSmtpStatus() {
+  if (isSmtpConfigured()) {
+    console.log(`[SMTP] Configured (${process.env.SMTP_HOST}, user: ${process.env.SMTP_USER.trim()})`);
+  } else {
+    console.warn('[SMTP] Not configured — add SMTP_USER and SMTP_PASS to .env to send real emails.');
+  }
+}
+
+module.exports = { sendEmailOtp, isSmtpConfigured, logSmtpStatus };

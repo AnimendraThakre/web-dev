@@ -1,12 +1,23 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { sendOtpEmail } = require('../utils/mailer');
+const { config } = require('../config/env');
+const { respondWithError } = require('../middleware/errorHandler');
 const { findByEmail, findById, createUser, updateUser } = require('../models/User');
+const { sendEmailOtp } = require('../utils/mailer');
+const {
+  generateEmailOtp,
+  isValidEmailOtp,
+  hashEmailOtp,
+  verifyEmailOtp,
+  getEmailOtpExpiry,
+} = require('../utils/emailOtp');
+const { generateTotpSetup } = require('../utils/totp');
+const { ACTIONS, logAuthEvent } = require('../utils/activityLogger');
 
 const router = express.Router();
 const SALT_ROUNDS = 10;
-const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const ROLES = { USER: 'user', ADMIN: 'admin' };
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -20,16 +31,32 @@ function isValidName(name) {
   return typeof name === 'string' && name.trim().length >= 2 && name.trim().length <= 100;
 }
 
-function generateOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+function getAuthUserId(req) {
+  const token = req.cookies?.token;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (payload.type !== 'auth') return null;
+    return payload.sub;
+  } catch {
+    return null;
+  }
 }
 
-function signMfaPendingToken(userId) {
-  return jwt.sign(
-    { sub: userId, type: 'mfa_pending' },
-    process.env.JWT_MFA_SECRET,
-    { expiresIn: '10m' }
-  );
+function signToken(userId, type, expiresIn, extra = {}) {
+  return jwt.sign({ sub: userId, type, ...extra }, config.jwtMfaSecret, { expiresIn });
+}
+
+function signMfaPendingToken(userId, portal = ROLES.USER) {
+  return signToken(userId, 'mfa_pending', '10m', { portal });
+}
+
+function signVerifyEmailToken(userId) {
+  return signToken(userId, 'verify_email_pending', '15m');
+}
+
+function signSetupMfaToken(userId) {
+  return signToken(userId, 'setup_mfa_pending', '15m');
 }
 
 function signAuthToken(user) {
@@ -38,33 +65,67 @@ function signAuthToken(user) {
       sub: user._id,
       email: user.email,
       fullName: user.fullName,
+      role: user.role || ROLES.USER,
       type: 'auth',
     },
-    process.env.JWT_SECRET,
+    config.jwtSecret,
     { expiresIn: '24h' }
   );
 }
 
-function setAuthCookie(res, token) {
-  const maxAge = Number(process.env.COOKIE_MAX_AGE_MS) || 86400000;
-  res.cookie('token', token, {
+function getMfaSession(req) {
+  const token = req.cookies?.mfa_token;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtMfaSecret);
+    if (payload.type !== 'mfa_pending') return null;
+    return { userId: payload.sub, portal: payload.portal || ROLES.USER };
+  } catch {
+    return null;
+  }
+}
+
+function setCookie(res, name, token, maxAge) {
+  res.cookie(name, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: config.isProduction,
     sameSite: 'lax',
     maxAge,
   });
 }
 
-function setMfaPendingCookie(res, token) {
-  res.cookie('mfa_token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 10 * 60 * 1000,
-  });
+function setAuthCookie(res, token) {
+  setCookie(res, 'token', token, config.cookieMaxAgeMs);
 }
 
-// POST /api/auth/signup
+function setMfaPendingCookie(res, token) {
+  setCookie(res, 'mfa_token', token, 10 * 60 * 1000);
+}
+
+function setVerifyEmailCookie(res, token) {
+  setCookie(res, 'verify_email_token', token, 15 * 60 * 1000);
+}
+
+function setSetupMfaCookie(res, token) {
+  setCookie(res, 'setup_mfa_token', token, 15 * 60 * 1000);
+}
+
+function getTokenUserId(req, cookieName, expectedType) {
+  const token = req.cookies?.[cookieName];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, config.jwtMfaSecret);
+    if (payload.type !== expectedType) return null;
+    return payload.sub;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * POST /api/auth/signup
+ * Creates inactive account, sends email OTP, redirects to email verification.
+ */
 router.post('/signup', async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
@@ -79,113 +140,496 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Password must be 6–128 characters.' });
     }
 
-    const existing = await findByEmail(email);
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await findByEmail(normalizedEmail);
     if (existing) {
+      await logAuthEvent(req, {
+        email: normalizedEmail,
+        action: ACTIONS.SIGNUP_FAILED,
+        meta: { reason: 'email_taken' },
+      });
       return res.status(409).json({ error: 'Email already registered.' });
     }
 
-    const hashed = await bcrypt.hash(password, SALT_ROUNDS);
-    await createUser({
+    const otp = generateEmailOtp();
+    const otpHash = await hashEmailOtp(otp);
+    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+    const user = await createUser({
       fullName: fullName.trim(),
-      email: email.trim().toLowerCase(),
-      password: hashed,
+      email: normalizedEmail,
+      password: hashedPassword,
+      role: ROLES.USER,
+      isDisabled: false,
+      isEmailVerified: false,
+      mfaEnabled: false,
+      totpSecret: null,
+      emailOtpHash: otpHash,
+      emailOtpExpiresAt: getEmailOtpExpiry(),
     });
 
-    res.status(201).json({ message: 'Account created successfully. You can log in now.' });
-  } catch (err) {
-    if (err.code === 11000) {
-      return res.status(409).json({ error: 'Email already registered.' });
-    }
-    console.error('Signup error:', err);
-    res.status(500).json({ error: 'Server error during sign up.' });
-  }
-});
+    const mailResult = await sendEmailOtp(user.email, otp, user.fullName);
+    setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
 
-// POST /api/auth/login — password only; issues MFA pending, sends OTP
-router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ error: 'Invalid email address.' });
-    }
-    if (!password || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Password is required.' });
-    }
-
-    const user = await findByEmail(email);
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
-    }
-
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
-    }
-
-    const otp = generateOtp();
-    const otpHash = await bcrypt.hash(otp, SALT_ROUNDS);
-    const otpExpiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
-
-    await updateUser(user, { otp: otpHash, otpExpiresAt });
-
-    const mailResult = await sendOtpEmail(user.email, otp, user.fullName);
-
-    const mfaToken = signMfaPendingToken(user._id);
-    setMfaPendingCookie(res, mfaToken);
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.SIGNUP,
+      role: user.role || ROLES.USER,
+    });
 
     const response = {
       message: mailResult.sent
         ? 'Verification code sent to your email.'
-        : 'Verification code generated (check server console — SMTP not configured).',
-      redirect: '/mfa.html',
+        : 'Account created. Check server console for OTP (dev mode).',
+      redirect: '/verify-email.html',
     };
-    if (mailResult.devOtp) {
-      response.devOtp = mailResult.devOtp;
-    }
-    res.json(response);
+    if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+    res.status(201).json(response);
   } catch (err) {
-    console.error('Login error:', err);
-    const status = err.message?.includes('verification email') ? 503 : 500;
-    res.status(status).json({
-      error: err.message || 'Server error during login.',
-    });
+    respondWithError(res, err, 'Server error during sign up.');
   }
 });
 
-// POST /api/auth/logout
-router.post('/logout', (req, res) => {
+/**
+ * POST /api/auth/verify-email
+ * Verifies email OTP, activates account, generates Google Authenticator QR.
+ */
+router.post('/verify-email', async (req, res) => {
+  try {
+    const userId = getTokenUserId(req, 'verify_email_token', 'verify_email_pending');
+    if (!userId) {
+      return res.status(401).json({ error: 'Verification session expired. Sign up again.' });
+    }
+
+    const { code } = req.body;
+    if (!isValidEmailOtp(code)) {
+      return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
+    }
+
+    const user = await findById(userId, { includeEmailOtp: true, includeTotpSecret: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    if (user.isEmailVerified) {
+      return res.status(400).json({ error: 'Email already verified.' });
+    }
+    if (!user.emailOtpHash || !user.emailOtpExpiresAt) {
+      return res.status(400).json({ error: 'No active code. Request a new one.' });
+    }
+    if (new Date() > new Date(user.emailOtpExpiresAt)) {
+      return res.status(400).json({ error: 'Code expired. Request a new one.' });
+    }
+
+    const valid = await verifyEmailOtp(code, user.emailOtpHash);
+    if (!valid) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.VERIFY_EMAIL_FAILED,
+        role: user.role || ROLES.USER,
+      });
+      return res.status(401).json({ error: 'Invalid verification code.' });
+    }
+
+    const { base32Secret, qrCodeDataUrl } = await generateTotpSetup(user.email);
+
+    await updateUser(user, {
+      isEmailVerified: true,
+      emailOtpHash: null,
+      emailOtpExpiresAt: null,
+      totpSecret: base32Secret,
+      mfaEnabled: false,
+    });
+
+    res.clearCookie('verify_email_token');
+    setSetupMfaCookie(res, signSetupMfaToken(user._id));
+
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.VERIFY_EMAIL_SUCCESS,
+      role: user.role || ROLES.USER,
+    });
+
+    res.json({
+      message: 'Email verified! Set up Google Authenticator to finish registration.',
+      qrCodeDataUrl,
+      redirect: '/setup-auth.html',
+    });
+  } catch (err) {
+    respondWithError(res, err, 'Email verification failed.');
+  }
+});
+
+/** POST /api/auth/resend-email-otp */
+router.post('/resend-email-otp', async (req, res) => {
+  try {
+    const userId = getTokenUserId(req, 'verify_email_token', 'verify_email_pending');
+    if (!userId) {
+      return res.status(401).json({ error: 'Verification session expired. Sign up again.' });
+    }
+
+    const user = await findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user.isEmailVerified) {
+      return res.status(400).json({ error: 'Email already verified.' });
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = await hashEmailOtp(otp);
+    await updateUser(user, { emailOtpHash: otpHash, emailOtpExpiresAt: getEmailOtpExpiry() });
+
+    const mailResult = await sendEmailOtp(user.email, otp, user.fullName);
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.RESEND_EMAIL_OTP,
+      role: user.role || ROLES.USER,
+    });
+    const response = {
+      message: mailResult.sent ? 'New code sent to your email.' : 'New code generated (dev mode).',
+    };
+    if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+    res.json(response);
+  } catch (err) {
+    respondWithError(res, err, 'Could not resend code.');
+  }
+});
+
+/**
+ * Shared login handler for user and admin portals (MFA required).
+ */
+async function handleLogin(req, res, expectedRole) {
+  const { email, password } = req.body;
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'Invalid email address.' });
+  }
+  if (!password || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Password is required.' });
+  }
+
+  const user = await findByEmail(email, { includeTotpSecret: true });
+  if (!user) {
+    await logAuthEvent(req, {
+      email: email.trim().toLowerCase(),
+      action: ACTIONS.LOGIN_FAILED,
+      role: expectedRole,
+      meta: { reason: 'unknown_email' },
+    });
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) {
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.LOGIN_FAILED,
+      role: user.role || ROLES.USER,
+      meta: { reason: 'bad_password' },
+    });
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  const userRole = user.role || ROLES.USER;
+  if (userRole !== expectedRole) {
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.LOGIN_WRONG_PORTAL,
+      role: userRole,
+      meta: { expectedPortal: expectedRole, actualRole: userRole },
+    });
+    const redirect = expectedRole === ROLES.ADMIN ? '/login.html' : '/admin-login.html';
+    const msg = expectedRole === ROLES.ADMIN
+      ? 'This account is not an admin. Use user login.'
+      : 'Admin accounts must use the admin login page.';
+    return res.status(403).json({ error: msg, redirect });
+  }
+
+  if (user.isDisabled) {
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.LOGIN_BLOCKED,
+      role: userRole,
+      meta: { reason: 'disabled' },
+    });
+    return res.status(403).json({ error: 'Account is disabled. Contact an administrator.' });
+  }
+
+  if (!user.isEmailVerified) {
+    setVerifyEmailCookie(res, signVerifyEmailToken(user._id));
+    return res.status(403).json({
+      error: 'Please verify your email first.',
+      redirect: '/verify-email.html',
+    });
+  }
+
+  if (!user.mfaEnabled || !user.totpSecret) {
+    setSetupMfaCookie(res, signSetupMfaToken(user._id));
+    return res.status(403).json({
+      error: 'Please complete Google Authenticator setup.',
+      redirect: '/setup-auth.html',
+      needsMfaSetup: true,
+    });
+  }
+
+  const mfaToken = signMfaPendingToken(user._id, expectedRole);
+  setMfaPendingCookie(res, mfaToken);
+
+  await logAuthEvent(req, {
+    email: user.email,
+    userId: user._id,
+    action: ACTIONS.LOGIN_PASSWORD_OK,
+    role: userRole,
+    meta: { portal: expectedRole },
+  });
+
+  const mfaPage = expectedRole === ROLES.ADMIN ? '/admin-mfa.html' : '/mfa.html';
+  return res.json({
+    message: 'Enter the code from Google Authenticator.',
+    mfaRequired: true,
+    redirect: mfaPage,
+  });
+}
+
+/**
+ * POST /api/auth/login — User portal only.
+ */
+router.post('/login', async (req, res) => {
+  try {
+    await handleLogin(req, res, ROLES.USER);
+  } catch (err) {
+    respondWithError(res, err, 'Server error during login.');
+  }
+});
+
+/**
+ * POST /api/auth/admin/login — Admin portal only.
+ */
+router.post('/admin/login', async (req, res) => {
+  try {
+    await handleLogin(req, res, ROLES.ADMIN);
+  } catch (err) {
+    respondWithError(res, err, 'Server error during admin login.');
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  const token = req.cookies?.token;
+  if (token) {
+    try {
+      const payload = jwt.verify(token, config.jwtSecret);
+      if (payload.type === 'auth') {
+        await logAuthEvent(req, {
+          email: payload.email,
+          userId: payload.sub,
+          action: ACTIONS.LOGOUT,
+          role: payload.role || ROLES.USER,
+        });
+      }
+    } catch {
+      /* expired/invalid token — still clear cookies */
+    }
+  }
   res.clearCookie('token');
   res.clearCookie('mfa_token');
+  res.clearCookie('verify_email_token');
+  res.clearCookie('setup_mfa_token');
   res.json({ message: 'Logged out successfully.' });
 });
 
-// GET /api/auth/me — current authenticated user
+/**
+ * POST /api/auth/change-password
+ * Authenticated users can change their password by providing current password.
+ */
+router.post('/change-password', async (req, res) => {
+  try {
+    const userId = getAuthUserId(req);
+    if (!userId) return res.status(401).json({ error: 'Authentication required.' });
+
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || typeof currentPassword !== 'string') {
+      return res.status(400).json({ error: 'Current password is required.' });
+    }
+    if (!isValidPassword(newPassword)) {
+      return res.status(400).json({ error: 'New password must be 6–128 characters.' });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ error: 'New password must be different from current password.' });
+    }
+
+    const user = await findById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const validCurrent = await bcrypt.compare(currentPassword, user.password);
+    if (!validCurrent) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.CHANGE_PASSWORD_FAILED,
+        role: user.role || ROLES.USER,
+        meta: { reason: 'wrong_current_password' },
+      });
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await updateUser(user, { password: hashedPassword });
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.CHANGE_PASSWORD_SUCCESS,
+      role: user.role || ROLES.USER,
+    });
+    res.json({ message: 'Password updated successfully.' });
+  } catch (err) {
+    respondWithError(res, err, 'Could not change password.');
+  }
+});
+
+/**
+ * POST /api/auth/forgot-password
+ * Sends a time-limited OTP to the user's email for password reset.
+ */
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email address.' });
+    }
+
+    const user = await findByEmail(email);
+    if (user) {
+      const otp = generateEmailOtp();
+      const otpHash = await hashEmailOtp(otp);
+      await updateUser(user, {
+        resetOtpHash: otpHash,
+        resetOtpExpiresAt: getEmailOtpExpiry(),
+      });
+
+      const mailResult = await sendEmailOtp(user.email, otp, user.fullName, {
+        subject: 'Password reset code',
+        heading: 'Reset your password',
+        intro: 'Use this code to reset your password:',
+      });
+
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.FORGOT_PASSWORD,
+        role: user.role || ROLES.USER,
+      });
+
+      const response = {
+        message: 'If that email is registered, a password reset code has been sent.',
+        redirect: '/reset-password.html',
+      };
+      if (mailResult.devOtp) response.devOtp = mailResult.devOtp;
+      return res.json(response);
+    }
+
+    return res.json({
+      message: 'If that email is registered, a password reset code has been sent.',
+    });
+  } catch (err) {
+    respondWithError(res, err, 'Could not start password reset.');
+  }
+});
+
+/**
+ * POST /api/auth/reset-password
+ * Resets password using email + OTP code.
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email address.' });
+    }
+    if (!isValidEmailOtp(code)) {
+      return res.status(400).json({ error: 'Enter a valid 6-digit code.' });
+    }
+    if (!isValidPassword(newPassword)) {
+      return res.status(400).json({ error: 'New password must be 6–128 characters.' });
+    }
+
+    const user = await findByEmail(email, { includeResetOtp: true });
+    if (!user || !user.resetOtpHash || !user.resetOtpExpiresAt) {
+      return res.status(400).json({ error: 'Invalid or expired reset session.' });
+    }
+    if (new Date() > new Date(user.resetOtpExpiresAt)) {
+      await updateUser(user, { resetOtpHash: null, resetOtpExpiresAt: null });
+      return res.status(400).json({ error: 'Reset code expired. Request a new one.' });
+    }
+
+    const valid = await verifyEmailOtp(code, user.resetOtpHash);
+    if (!valid) {
+      await logAuthEvent(req, {
+        email: user.email,
+        userId: user._id,
+        action: ACTIONS.RESET_PASSWORD_FAILED,
+        role: user.role || ROLES.USER,
+        meta: { reason: 'invalid_code' },
+      });
+      return res.status(401).json({ error: 'Invalid reset code.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await updateUser(user, {
+      password: hashedPassword,
+      resetOtpHash: null,
+      resetOtpExpiresAt: null,
+    });
+
+    await logAuthEvent(req, {
+      email: user.email,
+      userId: user._id,
+      action: ACTIONS.RESET_PASSWORD_SUCCESS,
+      role: user.role || ROLES.USER,
+    });
+
+    res.clearCookie('mfa_token');
+    res.clearCookie('token');
+    res.json({ message: 'Password reset successful. Please log in again.', redirect: '/login.html' });
+  } catch (err) {
+    respondWithError(res, err, 'Could not reset password.');
+  }
+});
+
 router.get('/me', async (req, res) => {
   const token = req.cookies?.token;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated.' });
-  }
+  if (!token) return res.status(401).json({ error: 'Not authenticated.' });
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    if (payload.type !== 'auth') {
-      return res.status(401).json({ error: 'Invalid session.' });
-    }
+    const payload = jwt.verify(token, config.jwtSecret);
+    if (payload.type !== 'auth') return res.status(401).json({ error: 'Invalid session.' });
     const user = await findById(payload.sub);
-    if (!user) {
-      return res.status(401).json({ error: 'User not found.' });
-    }
+    if (!user) return res.status(401).json({ error: 'User not found.' });
+    if (user.isDisabled) return res.status(403).json({ error: 'Account is disabled.' });
     res.json({
       fullName: user.fullName,
       email: user.email,
+      role: user.role || ROLES.USER,
+      isDisabled: Boolean(user.isDisabled),
+      isEmailVerified: Boolean(user.isEmailVerified),
+      mfaEnabled: Boolean(user.mfaEnabled),
     });
   } catch {
     res.status(401).json({ error: 'Invalid or expired session.' });
   }
 });
 
-// Export helpers for otp route
 router.signAuthToken = signAuthToken;
 router.setAuthCookie = setAuthCookie;
+router.setMfaPendingCookie = setMfaPendingCookie;
+router.signMfaPendingToken = signMfaPendingToken;
+router.getMfaSession = getMfaSession;
+router.ROLES = ROLES;
+router.signSetupMfaToken = signSetupMfaToken;
+router.setSetupMfaCookie = setSetupMfaCookie;
+router.getTokenUserId = getTokenUserId;
 
 module.exports = router;

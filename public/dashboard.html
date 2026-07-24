@@ -6,7 +6,7 @@
   <title>Dashboard</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="page-dashboard">
   <div class="dashboard-container">
     <h1>Dashboard</h1>
     <p class="subtitle" id="welcomeMsg">Loading...</p>
@@ -16,9 +16,27 @@
     <div class="user-card">
       <p><strong>Name:</strong> <span id="userName">—</span></p>
       <p><strong>Email:</strong> <span id="userEmail">—</span></p>
+      <p><strong>Email verified:</strong> <span id="emailStatus">—</span></p>
+      <p><strong>MFA:</strong> <span id="mfaStatus">—</span></p>
+    </div>
+
+    <div id="mfaSetupSection" class="user-card" style="display:none">
+      <h3 style="margin-top:0;text-align:center">Set up Google Authenticator</h3>
+      <p class="subtitle">Scan this QR code with the Google Authenticator app</p>
+      <div class="qr-wrap">
+        <img id="qrCode" alt="QR code for Google Authenticator" />
+      </div>
+      <label for="setupCode">Enter the 6-digit code to confirm</label>
+      <input type="text" id="setupCode" class="otp-input" placeholder="000000" inputmode="numeric" maxlength="6">
+      <div class="button-group">
+        <button type="button" class="btn-login" id="enableMfaBtn">Enable MFA</button>
+        <button type="button" class="btn-reset" id="cancelSetupBtn">Cancel</button>
+      </div>
     </div>
 
     <div class="button-group">
+      <button type="button" class="btn-signup" id="setupMfaBtn" style="display:none">Enable Google Authenticator</button>
+      <a href="/change-password.html" class="btn btn-secondary">Change Password</a>
       <button type="button" class="btn-danger" id="logoutBtn">Logout</button>
     </div>
   </div>

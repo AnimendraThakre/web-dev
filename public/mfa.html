@@ -10,13 +10,13 @@
   <div class="auth-container">
     <div class="mfa-icon" aria-hidden="true">🔐</div>
     <h2>Two-Factor Verification</h2>
-    <p class="subtitle">Enter the 6-digit code sent to your email</p>
+    <p class="subtitle">Enter the 6-digit code from Google Authenticator</p>
 
     <div id="message" class="message" role="alert"></div>
-    <p class="timer" id="timer">Code expires in 5:00</p>
+    <p class="timer" id="timer">Codes refresh every 30 seconds</p>
 
     <form id="mfaForm" novalidate>
-      <label for="otp">Verification code</label>
+      <label for="otp">Authenticator code</label>
       <input
         type="text"
         id="otp"
@@ -31,7 +31,6 @@
 
       <div class="button-group">
         <button type="submit" class="btn-login" id="verifyBtn">Verify & Continue</button>
-        <button type="button" class="btn-secondary" id="resendBtn">Resend code</button>
         <a href="/login.html" class="btn btn-link">Back to login</a>
       </div>
     </form>

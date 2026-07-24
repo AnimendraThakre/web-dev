@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Set Up Google Authenticator</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="auth-container">
+    <div class="mfa-icon" aria-hidden="true">📱</div>
+    <h2>Google Authenticator</h2>
+    <p class="subtitle">Scan the QR code, then enter the 6-digit code</p>
+
+    <div id="message" class="message" role="alert"></div>
+
+    <div class="qr-wrap">
+      <img id="qrCode" alt="QR code for Google Authenticator" />
+    </div>
+
+    <form id="setupAuthForm" novalidate>
+      <label for="setupCode">Authenticator code</label>
+      <input type="text" id="setupCode" class="otp-input" placeholder="000000"
+        inputmode="numeric" maxlength="6" required>
+
+      <div class="button-group">
+        <button type="submit" class="btn-login" id="enableSetupBtn">Enable & Finish</button>
+        <a href="/login.html" class="btn btn-link">Back to login</a>
+      </div>
+    </form>
+  </div>
+
+  <script src="/app.js"></script>
+  <script>App.initSetupAuthPage();</script>
+</body>
+</html>
